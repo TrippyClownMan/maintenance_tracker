@@ -1,0 +1,1122 @@
+#include <furi.h>
+#include <furi_hal_nfc.h>
+#include <furi_hal_rtc.h>
+#include <gui/gui.h>
+#include <gui/view.h>
+#include <gui/view_dispatcher.h>
+#include <gui/modules/submenu.h>
+#include <gui/modules/text_box.h>
+#include <gui/modules/text_input.h>
+#include <storage/storage.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define TAG "MaintenanceTracker"
+#define ASSET_LIMIT 24
+#define SERVICE_LIMIT 12
+#define SERVICE_NAME_SIZE 24
+#define ASSET_NAME_SIZE 32
+#define DATE_SIZE 12
+#define HISTORY_SIZE 4096
+#define URI_SIZE 96
+
+typedef enum {
+    ViewMain,
+    ViewEquipment,
+    ViewProfile,
+    ViewInput,
+    ViewHistory,
+    ViewChecklist,
+    ViewNotice,
+    ViewExitPrompt,
+} MaintenanceViewId;
+
+typedef enum {
+    InputNewAsset,
+    InputNewService,
+} InputKind;
+
+typedef enum {
+    NfcPurposeService,
+    NfcPurposeHours,
+    NfcPurposeManualHours,
+} NfcPurpose;
+
+typedef struct {
+    uint32_t id;
+    uint32_t lifetime_seconds;
+    char name[ASSET_NAME_SIZE];
+    char last_service[DATE_SIZE];
+} Asset;
+
+typedef struct {
+    ViewDispatcher* dispatcher;
+    Submenu* main_menu;
+    Submenu* profile_menu;
+    TextInput* text_input;
+    TextBox* text_box;
+    View* equipment_view;
+    View* checklist_view;
+    View* notice_view;
+    View* exit_view;
+    Storage* storage;
+    Asset assets[ASSET_LIMIT];
+    uint8_t asset_count;
+    int8_t selected_asset;
+    bool storage_ready;
+    char input_buffer[ASSET_NAME_SIZE];
+    InputKind input_kind;
+    char services[SERVICE_LIMIT][SERVICE_NAME_SIZE];
+    bool service_checked[SERVICE_LIMIT];
+    uint8_t service_count;
+    uint8_t checklist_selection;
+    bool timer_running;
+    uint32_t timer_start_tick;
+    uint32_t pending_seconds;
+    bool hours_pending_nfc;
+    uint32_t current_view;
+    bool nfc_in_progress;
+    NfcPurpose nfc_purpose;
+    FuriThread* nfc_thread;
+    char notice[96];
+    char nfc_result[96];
+    bool notice_dismiss_exits;
+    MaintenanceViewId notice_return_view;
+    char history[HISTORY_SIZE];
+} MaintenanceApp;
+
+static const char* const standard_services[] = {
+    "Oil",
+    "Filter",
+    "Inspection",
+    "Lubrication",
+};
+
+static const uint8_t standard_service_count = COUNT_OF(standard_services);
+
+static void text_input_callback(void* context);
+static void profile_menu_callback(void* context, uint32_t index);
+static void rebuild_profile_menu(MaintenanceApp* app);
+static void show_notice(MaintenanceApp* app, const char* message, bool exits);
+
+static const char* asset_db_path(void) {
+    return APP_DATA_PATH("assets.tsv");
+}
+
+static void asset_log_path(const Asset* asset, char* path, size_t size) {
+    snprintf(path, size, APP_DATA_PATH("%lu.txt"), (unsigned long)asset->id);
+}
+
+static void asset_services_path(const Asset* asset, char* path, size_t size) {
+    snprintf(path, size, APP_DATA_PATH("%lu.svc"), (unsigned long)asset->id);
+}
+
+static void switch_view(MaintenanceApp* app, MaintenanceViewId view_id) {
+    app->current_view = view_id;
+    view_dispatcher_switch_to_view(app->dispatcher, view_id);
+}
+
+static void format_date(char date[DATE_SIZE]) {
+    FuriHalRtcDateTime datetime = {0};
+    furi_hal_rtc_get_datetime(&datetime);
+    snprintf(
+        date,
+        DATE_SIZE,
+        "%04u-%02u-%02u",
+        (unsigned)datetime.year,
+        (unsigned)datetime.month,
+        (unsigned)datetime.day);
+}
+
+static bool ensure_data_directory(MaintenanceApp* app) {
+    FS_Error error = storage_common_mkdir(app->storage, "/ext/apps_data/maintenance_tracker");
+    if((error != FSE_OK) && (error != FSE_EXIST)) {
+        FURI_LOG_E(TAG, "Cannot create app data directory: %s", filesystem_api_error_get_desc(error));
+        return false;
+    }
+    return true;
+}
+
+static bool write_asset_database(MaintenanceApp* app) {
+    File* file = storage_file_alloc(app->storage);
+    bool success = false;
+    if(storage_file_open(file, asset_db_path(), FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        success = true;
+        for(uint8_t i = 0; i < app->asset_count; i++) {
+            Asset* asset = &app->assets[i];
+            char line[128];
+            int length = snprintf(
+                line,
+                sizeof(line),
+                "%lu\t%lu\t%s\t%s\n",
+                (unsigned long)asset->id,
+                (unsigned long)asset->lifetime_seconds,
+                asset->last_service,
+                asset->name);
+            if((length < 0) || ((size_t)length >= sizeof(line)) ||
+               (storage_file_write(file, line, (uint16_t)length) != (uint16_t)length)) {
+                success = false;
+                break;
+            }
+        }
+        if(!storage_file_close(file)) success = false;
+    } else {
+        FURI_LOG_E(TAG, "Cannot open asset database for writing");
+    }
+    storage_file_free(file);
+    return success;
+}
+
+static void parse_asset_line(MaintenanceApp* app, char* line) {
+    if(app->asset_count >= ASSET_LIMIT) return;
+
+    char* id_text = line;
+    char* seconds_text = strchr(id_text, '\t');
+    if(!seconds_text) return;
+    *seconds_text++ = '\0';
+
+    char* date_text = strchr(seconds_text, '\t');
+    if(!date_text) return;
+    *date_text++ = '\0';
+
+    char* name_text = strchr(date_text, '\t');
+    if(!name_text) return;
+    *name_text++ = '\0';
+    name_text[strcspn(name_text, "\r\n")] = '\0';
+
+    char* end = NULL;
+    unsigned long id = strtoul(id_text, &end, 10);
+    if((end == id_text) || (*end != '\0') || (id > UINT32_MAX)) return;
+    unsigned long seconds = strtoul(seconds_text, &end, 10);
+    if((end == seconds_text) || (*end != '\0') || (seconds > UINT32_MAX)) return;
+    if(strlen(name_text) >= ASSET_NAME_SIZE) return;
+
+    Asset* asset = &app->assets[app->asset_count++];
+    asset->id = (uint32_t)id;
+    asset->lifetime_seconds = (uint32_t)seconds;
+    snprintf(asset->last_service, sizeof(asset->last_service), "%s", date_text);
+    snprintf(asset->name, sizeof(asset->name), "%s", name_text);
+}
+
+static bool load_assets(MaintenanceApp* app) {
+    File* file = storage_file_alloc(app->storage);
+    if(!storage_file_open(file, asset_db_path(), FSAM_READ, FSOM_OPEN_EXISTING)) {
+        storage_file_free(file);
+        file = storage_file_alloc(app->storage);
+        bool created = storage_file_open(file, asset_db_path(), FSAM_WRITE, FSOM_CREATE_NEW);
+        if(created) created = storage_file_close(file);
+        storage_file_free(file);
+        if(!created) FURI_LOG_E(TAG, "Cannot create asset database");
+        return created;
+    }
+
+    char line[128];
+    uint8_t line_length = 0;
+    char chunk[64];
+    uint16_t count;
+    while((count = storage_file_read(file, chunk, sizeof(chunk))) > 0) {
+        for(uint16_t i = 0; i < count; i++) {
+            if(chunk[i] == '\n') {
+                line[line_length] = '\0';
+                if(line_length) parse_asset_line(app, line);
+                line_length = 0;
+            } else if((line_length + 1U) < sizeof(line)) {
+                line[line_length++] = chunk[i];
+            } else {
+                line_length = 0;
+            }
+        }
+    }
+    if(line_length) {
+        line[line_length] = '\0';
+        parse_asset_line(app, line);
+    }
+
+    bool success = storage_file_close(file);
+    storage_file_free(file);
+    return success;
+}
+
+static void load_services(MaintenanceApp* app) {
+    app->service_count = standard_service_count;
+    for(uint8_t i = 0; i < standard_service_count; i++) {
+        snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", standard_services[i]);
+    }
+    if(app->selected_asset < 0) return;
+
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    char path[64];
+    asset_services_path(asset, path, sizeof(path));
+    File* file = storage_file_alloc(app->storage);
+    if(!storage_file_open(file, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        storage_file_free(file);
+        return;
+    }
+
+    char line[SERVICE_NAME_SIZE];
+    uint8_t line_length = 0;
+    char chunk[32];
+    uint16_t count;
+    while((count = storage_file_read(file, chunk, sizeof(chunk))) > 0) {
+        for(uint16_t i = 0; i < count; i++) {
+            if(chunk[i] == '\n') {
+                line[line_length] = '\0';
+                if(line_length && app->service_count < SERVICE_LIMIT) {
+                    line[strcspn(line, "\r")] = '\0';
+                    if(line[0]) {
+                        snprintf(
+                            app->services[app->service_count++],
+                            SERVICE_NAME_SIZE,
+                            "%s",
+                            line);
+                    }
+                }
+                line_length = 0;
+            } else if((line_length + 1U) < sizeof(line)) {
+                line[line_length++] = chunk[i];
+            } else {
+                line_length = 0;
+            }
+        }
+    }
+    if(line_length && app->service_count < SERVICE_LIMIT) {
+        line[line_length] = '\0';
+        line[strcspn(line, "\r")] = '\0';
+        if(line[0]) {
+            snprintf(app->services[app->service_count++], SERVICE_NAME_SIZE, "%s", line);
+        }
+    }
+    storage_file_close(file);
+    storage_file_free(file);
+}
+
+static bool append_custom_service(MaintenanceApp* app, const char* service) {
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    char path[64];
+    asset_services_path(asset, path, sizeof(path));
+    File* file = storage_file_alloc(app->storage);
+    bool success = false;
+    if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        size_t length = strlen(service);
+        success = (storage_file_write(file, service, (uint16_t)length) == length) &&
+                  (storage_file_write(file, "\n", 1) == 1);
+        if(!storage_file_close(file)) success = false;
+    } else {
+        FURI_LOG_E(TAG, "Cannot open custom service file");
+    }
+    storage_file_free(file);
+    return success;
+}
+
+static bool append_service_log(MaintenanceApp* app) {
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    char path[64];
+    asset_log_path(asset, path, sizeof(path));
+    File* file = storage_file_alloc(app->storage);
+    bool success = false;
+    if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        FuriHalRtcDateTime datetime = {0};
+        furi_hal_rtc_get_datetime(&datetime);
+        char line[256];
+        int length = snprintf(
+            line,
+            sizeof(line),
+            "%04u-%02u-%02u %02u:%02u  ",
+            (unsigned)datetime.year,
+            (unsigned)datetime.month,
+            (unsigned)datetime.day,
+            (unsigned)datetime.hour,
+            (unsigned)datetime.minute);
+        for(uint8_t i = 0; (i < app->service_count) && (length > 0) &&
+                           ((size_t)length < sizeof(line) - 2);
+            i++) {
+            if(app->service_checked[i]) {
+                int added = snprintf(
+                    line + length,
+                    sizeof(line) - (size_t)length,
+                    "%s%s",
+                    (length > 22) ? ", " : "",
+                    app->services[i]);
+                if(added < 0) {
+                    length = -1;
+                    break;
+                }
+                length += added;
+            }
+        }
+        if(length > 0) {
+            if((size_t)length < sizeof(line) - 1) line[length++] = '\n';
+            success = storage_file_write(file, line, (uint16_t)length) == (uint16_t)length;
+        }
+        if(!storage_file_close(file)) success = false;
+    } else {
+        FURI_LOG_E(TAG, "Cannot open service log");
+    }
+    storage_file_free(file);
+    return success;
+}
+
+static bool add_asset(MaintenanceApp* app, const char* name) {
+    if(app->asset_count >= ASSET_LIMIT) return false;
+    Asset* asset = &app->assets[app->asset_count];
+    memset(asset, 0, sizeof(*asset));
+    uint32_t next_id = 1;
+    for(uint8_t i = 0; i < app->asset_count; i++) {
+        if(app->assets[i].id >= next_id) next_id = app->assets[i].id + 1;
+    }
+    asset->id = next_id;
+    snprintf(asset->name, sizeof(asset->name), "%s", name);
+    snprintf(asset->last_service, sizeof(asset->last_service), "Never");
+    app->asset_count++;
+    if(!write_asset_database(app)) {
+        app->asset_count--;
+        return false;
+    }
+    return true;
+}
+
+static bool build_ndef_uri(MaintenanceApp* app, char* buffer, size_t size) {
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    uint32_t seconds = asset->lifetime_seconds;
+    if(app->timer_running) {
+        uint32_t elapsed_ticks = (uint32_t)(furi_get_tick() - app->timer_start_tick);
+        uint64_t elapsed_ms =
+            ((uint64_t)elapsed_ticks * 1000U) / furi_kernel_get_tick_frequency();
+        seconds += (uint32_t)(elapsed_ms / 1000U);
+    }
+    uint32_t hours = seconds / 3600U;
+    uint32_t mask = 0;
+    if(app->nfc_purpose == NfcPurposeService) {
+        for(uint8_t i = 0; i < app->service_count; i++) {
+            if(app->service_checked[i]) mask |= 1U << i;
+        }
+    }
+    int length = snprintf(buffer, size, "m.io/?h=%lu&s=%04lx", (unsigned long)hours, (unsigned long)mask);
+    return (length > 0) && ((size_t)length < size);
+}
+
+static bool nfc_tx(FuriHalNfcTxRxContext* tx_rx, uint8_t* data, uint16_t bits) {
+    memcpy(tx_rx->tx_data, data, (bits + 7U) / 8U);
+    tx_rx->tx_bits = bits;
+    tx_rx->tx_rx_type = FuriHalNfcTxRxTypeDefault;
+    return furi_hal_nfc_tx_rx(tx_rx, 200);
+}
+
+static bool nfc_write_page(
+    FuriHalNfcTxRxContext* tx_rx,
+    uint8_t page,
+    const uint8_t data[4]) {
+    uint8_t command[6] = {0xA2, page, data[0], data[1], data[2], data[3]};
+    if(!nfc_tx(tx_rx, command, sizeof(command) * 8U)) return false;
+    return (tx_rx->rx_bits == 4) && ((tx_rx->rx_data[0] & 0x0FU) == 0x0AU);
+}
+
+static bool write_ntag_uri(MaintenanceApp* app) {
+    bool success = false;
+    FuriHalNfcTxRxContext tx_rx = {0};
+    FuriHalNfcDevData detected = {0};
+    char uri[URI_SIZE];
+    uint8_t ndef[128] = {0};
+    uint8_t page_data[4];
+    uint8_t existing_page[16];
+    uint16_t user_bytes = 0;
+
+    if(!build_ndef_uri(app, uri, sizeof(uri))) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "NFC URI is too long");
+        return false;
+    }
+
+    furi_hal_nfc_exit_sleep();
+    if(!furi_hal_nfc_detect(&detected, 1200)) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "No NFC tag detected");
+        goto cleanup;
+    }
+    if(detected.type != FuriHalNfcTypeA) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Place an NTAG213/215/216");
+        goto cleanup;
+    }
+
+    uint8_t get_version = 0x60;
+    if(!nfc_tx(&tx_rx, &get_version, 8) || (tx_rx.rx_bits != 64) ||
+       (tx_rx.rx_data[1] != 0x04) || (tx_rx.rx_data[2] != 0x04) ||
+       (tx_rx.rx_data[7] != 0x03)) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Unsupported NFC tag");
+        goto cleanup;
+    }
+    switch(tx_rx.rx_data[6]) {
+    case 0x0F:
+        user_bytes = 144;
+        break;
+    case 0x11:
+        user_bytes = 504;
+        break;
+    case 0x13:
+        user_bytes = 888;
+        break;
+    default:
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Use NTAG213/215/216");
+        goto cleanup;
+    }
+
+    uint8_t read_cc[2] = {0x30, 0x03};
+    if(!nfc_tx(&tx_rx, read_cc, sizeof(read_cc) * 8U) || (tx_rx.rx_bits != 128) ||
+       (tx_rx.rx_data[0] != 0xE1) || (tx_rx.rx_data[1] != 0x10) ||
+       (tx_rx.rx_data[2] == 0x00) || (tx_rx.rx_data[3] != 0x00)) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag is not writable NDEF");
+        goto cleanup;
+    }
+
+    uint8_t read_page4[2] = {0x30, 0x04};
+    if(!nfc_tx(&tx_rx, read_page4, sizeof(read_page4) * 8U) || (tx_rx.rx_bits != 128)) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Could not read tag memory");
+        goto cleanup;
+    }
+    memcpy(existing_page, tx_rx.rx_data, sizeof(existing_page));
+    bool empty_tag = true;
+    for(size_t i = 0; i < sizeof(existing_page); i++) {
+        if(existing_page[i] != 0x00) empty_tag = false;
+    }
+    bool empty_ndef = (existing_page[0] == 0x03) && (existing_page[1] == 0x00) &&
+                      (existing_page[2] == 0xFE);
+    bool maintenance_ndef =
+        (existing_page[0] == 0x03) && (existing_page[2] == 0xD1) &&
+        (existing_page[3] == 0x01) && (existing_page[5] == 'U') &&
+        (existing_page[6] == 0x04) && (memcmp(&existing_page[7], "m.io/", 5) == 0);
+    if(!empty_tag && !empty_ndef && !maintenance_ndef) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag has unrelated existing data");
+        goto cleanup;
+    }
+
+    size_t uri_length = strlen(uri);
+    size_t payload_length = uri_length + 1;
+    size_t message_length = 5 + uri_length;
+    size_t tlv_length = message_length + 2;
+    if((payload_length > 255) || (tlv_length > user_bytes) || (tlv_length > sizeof(ndef))) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "NDEF data exceeds tag capacity");
+        goto cleanup;
+    }
+
+    ndef[0] = 0x03;
+    ndef[1] = (uint8_t)message_length;
+    ndef[2] = 0xD1;
+    ndef[3] = 0x01;
+    ndef[4] = (uint8_t)payload_length;
+    ndef[5] = 'U';
+    ndef[6] = 0x04;
+    memcpy(&ndef[7], uri, uri_length);
+    ndef[7 + uri_length] = 0xFE;
+
+    size_t pages = (tlv_length + 3U) / 4U;
+    uint8_t blank_page[4] = {0x03, 0x00, 0xFE, 0x00};
+    if(!nfc_write_page(&tx_rx, 4, blank_page)) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag write failed");
+        goto cleanup;
+    }
+    for(size_t page = 1; page < pages; page++) {
+        memset(page_data, 0, sizeof(page_data));
+        size_t offset = page * 4U;
+        size_t remaining = tlv_length - offset;
+        size_t amount = remaining < sizeof(page_data) ? remaining : sizeof(page_data);
+        memcpy(page_data, &ndef[offset], amount);
+        if(!nfc_write_page(&tx_rx, (uint8_t)(4U + page), page_data)) {
+            snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag write failed");
+            goto cleanup;
+        }
+    }
+    memcpy(page_data, ndef, sizeof(page_data));
+    if(!nfc_write_page(&tx_rx, 4, page_data)) {
+        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag commit failed");
+        goto cleanup;
+    }
+
+    snprintf(app->nfc_result, sizeof(app->nfc_result), "NDEF written to NTAG");
+    success = true;
+
+cleanup:
+    furi_hal_nfc_sleep();
+    return success;
+}
+
+static int32_t nfc_thread_callback(void* context) {
+    MaintenanceApp* app = context;
+    bool success = write_ntag_uri(app);
+    view_dispatcher_send_custom_event(app->dispatcher, success ? 1U : 2U);
+    return 0;
+}
+
+static void begin_nfc_write(MaintenanceApp* app, NfcPurpose purpose) {
+    if(app->nfc_in_progress || (app->selected_asset < 0)) return;
+    app->nfc_purpose = purpose;
+    app->nfc_in_progress = true;
+    app->notice_return_view = purpose == NfcPurposeHours ? ViewExitPrompt : ViewProfile;
+    snprintf(app->notice, sizeof(app->notice), "Hold an NTAG213/215/216 nearby...");
+    switch_view(app, ViewNotice);
+    app->nfc_thread = furi_thread_alloc();
+    if(!app->nfc_thread) {
+        app->nfc_in_progress = false;
+        app->notice_dismiss_exits = false;
+        snprintf(app->notice, sizeof(app->notice), "Could not start NFC writer");
+        view_commit_model(app->notice_view, true);
+        return;
+    }
+    furi_thread_set_name(app->nfc_thread, "MaintenanceNfc");
+    furi_thread_set_stack_size(app->nfc_thread, 3072);
+    furi_thread_set_callback(app->nfc_thread, nfc_thread_callback);
+    furi_thread_set_context(app->nfc_thread, app);
+    furi_thread_start(app->nfc_thread);
+}
+
+static void draw_equipment(Canvas* canvas, void* context) {
+    MaintenanceApp* app = context;
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 10, "Equipment");
+    if(app->asset_count == 0) {
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str(canvas, 4, 30, "No profiles saved");
+        canvas_draw_str(canvas, 4, 43, "Back to add one");
+        return;
+    }
+
+    uint8_t first = app->selected_asset >= 2 ? (uint8_t)app->selected_asset - 1U : 0U;
+    for(uint8_t row = 0; (row < 2) && ((first + row) < app->asset_count); row++) {
+        uint8_t index = first + row;
+        uint8_t y = 27 + row * 18;
+        if(index == (uint8_t)app->selected_asset) {
+            canvas_set_color(canvas, ColorBlack);
+            canvas_draw_box(canvas, 0, y - 8, 127, 17);
+            canvas_set_color(canvas, ColorWhite);
+        } else {
+            canvas_set_color(canvas, ColorBlack);
+        }
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str(canvas, 3, y, app->assets[index].name);
+        char date[24];
+        snprintf(date, sizeof(date), "Last: %s", app->assets[index].last_service);
+        canvas_draw_str(canvas, 3, y + 8, date);
+        canvas_set_color(canvas, ColorBlack);
+    }
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 2, 62, "Up/Down  OK: open");
+}
+
+static void draw_checklist(Canvas* canvas, void* context) {
+    MaintenanceApp* app = context;
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 9, "Service checklist");
+    uint8_t item_count = app->service_count + 1U;
+    uint8_t first = app->checklist_selection >= 4 ? app->checklist_selection - 3U : 0U;
+    for(uint8_t row = 0; (row < 4) && ((first + row) < item_count); row++) {
+        uint8_t index = first + row;
+        uint8_t y = 22 + row * 10;
+        bool selected = index == app->checklist_selection;
+        if(selected) {
+            canvas_set_color(canvas, ColorBlack);
+            canvas_draw_box(canvas, 0, y - 8, 127, 10);
+            canvas_set_color(canvas, ColorWhite);
+        } else {
+            canvas_set_color(canvas, ColorBlack);
+        }
+        canvas_set_font(canvas, FontSecondary);
+        if(index < app->service_count) {
+            char line[32];
+            snprintf(
+                line,
+                sizeof(line),
+                "%c %s",
+                app->service_checked[index] ? 'x' : ' ',
+                app->services[index]);
+            canvas_draw_str(canvas, 3, y, line);
+        } else {
+            canvas_draw_str(canvas, 3, y, "Write NFC + save log");
+        }
+        canvas_set_color(canvas, ColorBlack);
+    }
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 2, 62, "OK: toggle/save  Back");
+}
+
+static void draw_notice(Canvas* canvas, void* context) {
+    MaintenanceApp* app = context;
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 11, app->nfc_in_progress ? "NFC write" : "Maintenance");
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 3, 29, app->notice);
+    if(!app->nfc_in_progress) canvas_draw_str(canvas, 3, 57, "OK/Back to continue");
+}
+
+static void draw_exit_prompt(Canvas* canvas, void* context) {
+    MaintenanceApp* app = context;
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 12, "Hours updated");
+    canvas_set_font(canvas, FontSecondary);
+    char line[32];
+    snprintf(line, sizeof(line), "%lu total hours", (unsigned long)(asset->lifetime_seconds / 3600U));
+    canvas_draw_str(canvas, 3, 29, line);
+    canvas_draw_str(canvas, 3, 43, "OK: write to NFC tag");
+    canvas_draw_str(canvas, 3, 57, "Back: exit without tag");
+}
+
+static bool equipment_input(InputEvent* event, void* context) {
+    MaintenanceApp* app = context;
+    if(event->type != InputTypeShort) return false;
+    if(event->key == InputKeyUp) {
+        if(app->selected_asset > 0) app->selected_asset--;
+        view_commit_model(app->equipment_view, true);
+        return true;
+    }
+    if(event->key == InputKeyDown) {
+        if((app->asset_count > 0) && ((uint8_t)(app->selected_asset + 1) < app->asset_count)) {
+            app->selected_asset++;
+        }
+        view_commit_model(app->equipment_view, true);
+        return true;
+    }
+    if(event->key == InputKeyOk) {
+        if((app->asset_count > 0) && (app->selected_asset >= 0)) {
+            if(app->hours_pending_nfc) {
+                switch_view(app, ViewExitPrompt);
+                return true;
+            }
+            load_services(app);
+            rebuild_profile_menu(app);
+            switch_view(app, ViewProfile);
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool checklist_input(InputEvent* event, void* context) {
+    MaintenanceApp* app = context;
+    if(event->type != InputTypeShort) return false;
+    uint8_t item_count = app->service_count + 1U;
+    if(event->key == InputKeyUp) {
+        if(app->checklist_selection > 0) app->checklist_selection--;
+        view_commit_model(app->checklist_view, true);
+        return true;
+    }
+    if(event->key == InputKeyDown) {
+        if(app->checklist_selection + 1U < item_count) app->checklist_selection++;
+        view_commit_model(app->checklist_view, true);
+        return true;
+    }
+    if(event->key == InputKeyOk) {
+        if(app->checklist_selection < app->service_count) {
+            app->service_checked[app->checklist_selection] =
+                !app->service_checked[app->checklist_selection];
+            view_commit_model(app->checklist_view, true);
+        } else {
+            bool selected_any = false;
+            for(uint8_t i = 0; i < app->service_count; i++) {
+                selected_any |= app->service_checked[i];
+            }
+            if(!selected_any) {
+                show_notice(app, "Select a service first", false);
+                return true;
+            }
+            if(!append_service_log(app)) {
+                show_notice(app, "Could not save SD log", false);
+                return true;
+            }
+            format_date(app->assets[(uint8_t)app->selected_asset].last_service);
+            if(!write_asset_database(app)) {
+                FURI_LOG_E(TAG, "Could not update asset database");
+            }
+            begin_nfc_write(app, NfcPurposeService);
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool notice_input(InputEvent* event, void* context) {
+    MaintenanceApp* app = context;
+    if((event->type != InputTypeShort) || (event->key != InputKeyOk)) return false;
+    if(app->nfc_in_progress) return true;
+    if(app->notice_dismiss_exits) {
+        view_dispatcher_stop(app->dispatcher);
+    } else {
+        switch_view(app, app->notice_return_view);
+    }
+    return true;
+}
+
+static bool exit_input(InputEvent* event, void* context) {
+    MaintenanceApp* app = context;
+    if((event->type == InputTypeShort) && (event->key == InputKeyOk)) {
+        begin_nfc_write(app, NfcPurposeHours);
+        return true;
+    }
+    return false;
+}
+
+static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
+    snprintf(app->notice, sizeof(app->notice), "%s", message);
+    app->notice_dismiss_exits = exits;
+    app->notice_return_view = app->current_view;
+    if(app->current_view == ViewInput) {
+        app->notice_return_view =
+            app->input_kind == InputNewAsset ? ViewMain : ViewProfile;
+    }
+    switch_view(app, ViewNotice);
+}
+
+static void rebuild_profile_menu(MaintenanceApp* app) {
+    submenu_reset(app->profile_menu);
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    char header[64];
+    snprintf(header, sizeof(header), "%s", asset->name);
+    submenu_set_header(app->profile_menu, header);
+    submenu_add_item(app->profile_menu, "View History/Log", 0, profile_menu_callback, app);
+    submenu_add_item(app->profile_menu, "Log Service Action", 1, profile_menu_callback, app);
+    submenu_add_item(
+        app->profile_menu, "Add Custom Service Type", 2, profile_menu_callback, app);
+    char timer_label[40];
+    if(app->timer_running) {
+        uint32_t elapsed = (uint32_t)(furi_get_tick() - app->timer_start_tick);
+        uint64_t seconds = ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
+        snprintf(
+            timer_label,
+            sizeof(timer_label),
+            "Stop timer (%lum %lus)",
+            (unsigned long)(seconds / 60U),
+            (unsigned long)(seconds % 60U));
+    } else {
+        snprintf(timer_label, sizeof(timer_label), "Start run timer");
+    }
+    submenu_add_item(app->profile_menu, timer_label, 3, profile_menu_callback, app);
+    submenu_add_item(app->profile_menu, "Write hours to NFC", 4, profile_menu_callback, app);
+}
+
+static void main_menu_callback(void* context, uint32_t index) {
+    MaintenanceApp* app = context;
+    if(index == 0) {
+        app->selected_asset = app->asset_count ? 0 : -1;
+        switch_view(app, ViewEquipment);
+    } else if(index == 1) {
+        app->input_kind = InputNewAsset;
+        memset(app->input_buffer, 0, sizeof(app->input_buffer));
+        text_input_reset(app->text_input);
+        text_input_set_header_text(app->text_input, "Equipment name");
+        text_input_set_result_callback(
+            app->text_input,
+            text_input_callback,
+            app,
+            app->input_buffer,
+            sizeof(app->input_buffer),
+            true);
+        switch_view(app, ViewInput);
+    }
+}
+
+static void text_input_callback(void* context) {
+    MaintenanceApp* app = context;
+    if((app->input_buffer[0] == '\0') ||
+       (strchr(app->input_buffer, '\t') != NULL) ||
+       (strchr(app->input_buffer, '\n') != NULL) ||
+       (strchr(app->input_buffer, '\r') != NULL)) {
+        show_notice(app, "Name cannot be empty", false);
+        return;
+    }
+
+    if(app->input_kind == InputNewAsset) {
+        if(add_asset(app, app->input_buffer)) {
+            app->selected_asset = (int8_t)(app->asset_count - 1U);
+            switch_view(app, ViewMain);
+        } else {
+            show_notice(app, "Could not save equipment", false);
+        }
+    } else if(app->input_kind == InputNewService) {
+        if(strlen(app->input_buffer) >= SERVICE_NAME_SIZE) {
+            show_notice(app, "Service name is too long", false);
+        } else if(app->service_count >= SERVICE_LIMIT) {
+            show_notice(app, "Service list is full", false);
+        } else if(append_custom_service(app, app->input_buffer)) {
+            load_services(app);
+            rebuild_profile_menu(app);
+            switch_view(app, ViewProfile);
+        } else {
+            show_notice(app, "Could not save service", false);
+        }
+    }
+}
+
+static void profile_menu_callback(void* context, uint32_t index) {
+    MaintenanceApp* app = context;
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    if(index == 0) {
+        char path[64];
+        asset_log_path(asset, path, sizeof(path));
+        File* file = storage_file_alloc(app->storage);
+        size_t used = 0;
+        app->history[0] = '\0';
+        if(storage_file_open(file, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+            while((used + 1 < sizeof(app->history)) &&
+                  !storage_file_eof(file)) {
+                uint16_t read = storage_file_read(
+                    file, app->history + used, (uint16_t)(sizeof(app->history) - used - 1));
+                if(read == 0) break;
+                used += read;
+            }
+            app->history[used] = '\0';
+            storage_file_close(file);
+        } else {
+            snprintf(app->history, sizeof(app->history), "No service log saved yet.");
+        }
+        storage_file_free(file);
+        text_box_reset(app->text_box);
+        text_box_set_text(app->text_box, app->history);
+        text_box_set_focus(app->text_box, TextBoxFocusEnd);
+        switch_view(app, ViewHistory);
+    } else if(index == 1) {
+        memset(app->service_checked, 0, sizeof(app->service_checked));
+        app->checklist_selection = 0;
+        load_services(app);
+        view_commit_model(app->checklist_view, true);
+        switch_view(app, ViewChecklist);
+    } else if(index == 2) {
+        app->input_kind = InputNewService;
+        memset(app->input_buffer, 0, sizeof(app->input_buffer));
+        text_input_reset(app->text_input);
+        text_input_set_header_text(app->text_input, "New service type");
+        text_input_set_result_callback(
+            app->text_input,
+            text_input_callback,
+            app,
+            app->input_buffer,
+            sizeof(app->input_buffer),
+            true);
+        switch_view(app, ViewInput);
+    } else if(index == 3) {
+        if(app->timer_running) {
+            uint32_t elapsed = (uint32_t)(furi_get_tick() - app->timer_start_tick);
+            uint64_t added =
+                ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
+            uint32_t seconds = (uint32_t)(added / 1000U);
+            asset->lifetime_seconds += seconds;
+            app->pending_seconds += seconds;
+            app->timer_running = false;
+            app->hours_pending_nfc = app->pending_seconds > 0;
+            if(!write_asset_database(app)) {
+                FURI_LOG_E(TAG, "Could not persist hour total");
+                show_notice(app, "Hours not saved to SD", false);
+                return;
+            }
+        } else {
+            app->timer_start_tick = furi_get_tick();
+            app->timer_running = true;
+        }
+        rebuild_profile_menu(app);
+        submenu_set_selected_item(app->profile_menu, 3);
+    } else if(index == 4) {
+        begin_nfc_write(app, NfcPurposeManualHours);
+    }
+}
+
+static void tick_callback(void* context) {
+    MaintenanceApp* app = context;
+    if(app->timer_running && (app->current_view == ViewProfile)) {
+        rebuild_profile_menu(app);
+        submenu_set_selected_item(app->profile_menu, 3);
+    }
+}
+
+static bool custom_event_callback(void* context, uint32_t event) {
+    MaintenanceApp* app = context;
+    if(event != 1U && event != 2U) return false;
+    if(app->nfc_thread) {
+        furi_thread_join(app->nfc_thread);
+        furi_thread_free(app->nfc_thread);
+        app->nfc_thread = NULL;
+    }
+    app->nfc_in_progress = false;
+    snprintf(app->notice, sizeof(app->notice), "%s", app->nfc_result);
+    if(app->nfc_purpose == NfcPurposeHours) {
+        app->hours_pending_nfc = false;
+        app->pending_seconds = 0;
+        app->notice_dismiss_exits = true;
+    } else {
+        if((event == 1U) && (app->nfc_purpose == NfcPurposeManualHours)) {
+            app->hours_pending_nfc = false;
+            app->pending_seconds = 0;
+        }
+        app->notice_dismiss_exits = false;
+        app->notice_return_view = ViewProfile;
+    }
+    view_commit_model(app->notice_view, true);
+    return true;
+}
+
+static bool navigation_callback(void* context) {
+    MaintenanceApp* app = context;
+    if(app->nfc_in_progress) return true;
+    uint32_t current = app->current_view;
+    if(current == ViewMain) {
+        if(app->timer_running) {
+            uint32_t elapsed = (uint32_t)(furi_get_tick() - app->timer_start_tick);
+            uint64_t elapsed_ms =
+                ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
+            uint32_t seconds = (uint32_t)(elapsed_ms / 1000U);
+            app->assets[(uint8_t)app->selected_asset].lifetime_seconds += seconds;
+            app->pending_seconds += seconds;
+            app->timer_running = false;
+            app->hours_pending_nfc = app->pending_seconds > 0;
+            if(!write_asset_database(app)) {
+                FURI_LOG_E(TAG, "Could not persist hour total on exit");
+            }
+        }
+        if(app->hours_pending_nfc) {
+            switch_view(app, ViewExitPrompt);
+            return true;
+        }
+        return false;
+    }
+    if(current == ViewEquipment) {
+        switch_view(app, ViewMain);
+    } else if(current == ViewProfile) {
+        if(app->timer_running) return true;
+        switch_view(app, ViewEquipment);
+    } else if((current == ViewHistory) || (current == ViewChecklist)) {
+        switch_view(app, ViewProfile);
+    } else if(current == ViewInput) {
+        switch_view(app, app->input_kind == InputNewAsset ? ViewMain : ViewProfile);
+    } else if(current == ViewNotice) {
+        if(app->notice_dismiss_exits) {
+            view_dispatcher_stop(app->dispatcher);
+        } else {
+            switch_view(app, app->notice_return_view);
+        }
+    } else if(current == ViewExitPrompt) {
+        app->hours_pending_nfc = false;
+        view_dispatcher_stop(app->dispatcher);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static MaintenanceApp* maintenance_app_alloc(void) {
+    MaintenanceApp* app = malloc(sizeof(MaintenanceApp));
+    furi_check(app);
+    memset(app, 0, sizeof(*app));
+    app->selected_asset = -1;
+    app->storage = furi_record_open(RECORD_STORAGE);
+    app->storage_ready = ensure_data_directory(app) && load_assets(app);
+    if(!app->storage_ready) {
+        FURI_LOG_E(TAG, "Failed to initialize app data");
+    }
+
+    Gui* gui = furi_record_open(RECORD_GUI);
+    app->dispatcher = view_dispatcher_alloc();
+    view_dispatcher_enable_queue(app->dispatcher);
+    view_dispatcher_set_event_callback_context(app->dispatcher, app);
+    view_dispatcher_set_navigation_event_callback(app->dispatcher, navigation_callback);
+    view_dispatcher_set_custom_event_callback(app->dispatcher, custom_event_callback);
+    view_dispatcher_set_tick_event_callback(app->dispatcher, tick_callback, 1000);
+    view_dispatcher_attach_to_gui(app->dispatcher, gui, ViewDispatcherTypeFullscreen);
+
+    app->main_menu = submenu_alloc();
+    submenu_set_header(app->main_menu, "Maintenance Tracker");
+    submenu_add_item(app->main_menu, "Show Equipment", 0, main_menu_callback, app);
+    submenu_add_item(app->main_menu, "Add Equipment", 1, main_menu_callback, app);
+    view_dispatcher_add_view(
+        app->dispatcher, ViewMain, submenu_get_view(app->main_menu));
+
+    app->profile_menu = submenu_alloc();
+    view_dispatcher_add_view(
+        app->dispatcher, ViewProfile, submenu_get_view(app->profile_menu));
+
+    app->text_input = text_input_alloc();
+    text_input_set_result_callback(
+        app->text_input,
+        text_input_callback,
+        app,
+        app->input_buffer,
+        sizeof(app->input_buffer),
+        true);
+    view_dispatcher_add_view(
+        app->dispatcher, ViewInput, text_input_get_view(app->text_input));
+
+    app->text_box = text_box_alloc();
+    text_box_set_font(app->text_box, TextBoxFontText);
+    view_dispatcher_add_view(
+        app->dispatcher, ViewHistory, text_box_get_view(app->text_box));
+
+    app->equipment_view = view_alloc();
+    view_set_context(app->equipment_view, app);
+    view_set_draw_callback(app->equipment_view, draw_equipment);
+    view_set_input_callback(app->equipment_view, equipment_input);
+    view_allocate_model(app->equipment_view, ViewModelTypeLockFree, 1);
+    view_dispatcher_add_view(app->dispatcher, ViewEquipment, app->equipment_view);
+
+    app->checklist_view = view_alloc();
+    view_set_context(app->checklist_view, app);
+    view_set_draw_callback(app->checklist_view, draw_checklist);
+    view_set_input_callback(app->checklist_view, checklist_input);
+    view_allocate_model(app->checklist_view, ViewModelTypeLockFree, 1);
+    view_dispatcher_add_view(app->dispatcher, ViewChecklist, app->checklist_view);
+
+    app->notice_view = view_alloc();
+    view_set_context(app->notice_view, app);
+    view_set_draw_callback(app->notice_view, draw_notice);
+    view_set_input_callback(app->notice_view, notice_input);
+    view_allocate_model(app->notice_view, ViewModelTypeLockFree, 1);
+    view_dispatcher_add_view(app->dispatcher, ViewNotice, app->notice_view);
+
+    app->exit_view = view_alloc();
+    view_set_context(app->exit_view, app);
+    view_set_draw_callback(app->exit_view, draw_exit_prompt);
+    view_set_input_callback(app->exit_view, exit_input);
+    view_allocate_model(app->exit_view, ViewModelTypeLockFree, 1);
+    view_dispatcher_add_view(app->dispatcher, ViewExitPrompt, app->exit_view);
+
+    furi_record_close(RECORD_GUI);
+    return app;
+}
+
+static void maintenance_app_free(MaintenanceApp* app) {
+    if(app->nfc_thread) {
+        furi_thread_join(app->nfc_thread);
+        furi_thread_free(app->nfc_thread);
+        app->nfc_thread = NULL;
+    }
+
+    view_dispatcher_remove_view(app->dispatcher, ViewMain);
+    view_dispatcher_remove_view(app->dispatcher, ViewEquipment);
+    view_dispatcher_remove_view(app->dispatcher, ViewProfile);
+    view_dispatcher_remove_view(app->dispatcher, ViewInput);
+    view_dispatcher_remove_view(app->dispatcher, ViewHistory);
+    view_dispatcher_remove_view(app->dispatcher, ViewChecklist);
+    view_dispatcher_remove_view(app->dispatcher, ViewNotice);
+    view_dispatcher_remove_view(app->dispatcher, ViewExitPrompt);
+    submenu_free(app->main_menu);
+    submenu_free(app->profile_menu);
+    text_input_free(app->text_input);
+    text_box_free(app->text_box);
+    view_free(app->equipment_view);
+    view_free(app->checklist_view);
+    view_free(app->notice_view);
+    view_free(app->exit_view);
+    view_dispatcher_free(app->dispatcher);
+    furi_record_close(RECORD_STORAGE);
+    free(app);
+}
+
+int32_t maintenance_tracker_app(void* context) {
+    UNUSED(context);
+    MaintenanceApp* app = maintenance_app_alloc();
+    switch_view(app, ViewMain);
+    if(!app->storage_ready) {
+        show_notice(app, "Storage unavailable; check SD card", false);
+        app->notice_return_view = ViewMain;
+    }
+    view_dispatcher_run(app->dispatcher);
+    maintenance_app_free(app);
+    return 0;
+}
