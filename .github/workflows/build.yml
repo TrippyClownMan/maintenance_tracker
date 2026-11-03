@@ -1,15 +1,16 @@
-name: "Flipper FAP Build"
+name: "Build Flipper Application"
 on: [push, pull_request]
 
 jobs:
-  build:
+  build-app:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build FAP with FlipperFAP Actions
-        uses: joelewis012/flipper-fap-actions@main
+      - name: Build Flipper Application Package
+        uses: xMasterX/fbt-action@main
         with:
-          repo_url: https://github.com
-          target_firmware: momentum
+          app_dir: .
+          firmware_channel: release
+
