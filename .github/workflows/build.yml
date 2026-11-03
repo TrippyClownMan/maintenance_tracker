@@ -9,7 +9,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build FAP with FlipperFAP Actions
-        uses: joelewis012/flipper-fap-actions@v1
+        uses: joelewis012/flipper-fap-actions@main
         with:
           repo_url: https://github.com
           target_firmware: momentum
