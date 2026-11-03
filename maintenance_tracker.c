@@ -1,17 +1,19 @@
 #include <furi.h>
-#include <furi_hal_nfc.h>
-#include <furi_hal_rtc.h>
 #include <gui/gui.h>
 #include <gui/view.h>
 #include <gui/view_dispatcher.h>
 #include <gui/modules/submenu.h>
 #include <gui/modules/text_box.h>
 #include <gui/modules/text_input.h>
+#include <nfc/nfc.h>
+#include <nfc/nfc_device.h>
+#include <nfc/nfc_poller.h>
+#include <nfc/protocols/mf_ultralight/mf_ultralight.h>
+#include <nfc/protocols/mf_ultralight/mf_ultralight_poller_sync.h>
 #include <storage/storage.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <nfc/nfc.h>
 
 #define TAG "MaintenanceTracker"
 #define ASSET_LIMIT 24
@@ -21,6 +23,7 @@
 #define DATE_SIZE 12
 #define HISTORY_SIZE 4096
 #define URI_SIZE 96
+#define NFC_NDEF_BUFFER_SIZE (URI_SIZE + 8U)
 
 typedef enum {
     ViewMain,
@@ -39,10 +42,15 @@ typedef enum {
 } InputKind;
 
 typedef enum {
-    NfcPurposeService,
-    NfcPurposeHours,
-    NfcPurposeManualHours,
-} NfcPurpose;
+    NfcWriteSuccess,
+    NfcWriteNoTag,
+    NfcWriteUnsupportedTag,
+    NfcWriteReadOnly,
+    NfcWriteInsufficientSpace,
+    NfcWriteFailed,
+    NfcWriteVerifyFailed,
+    NfcWriteSnapshotFailed,
+} NfcWriteResult;
 
 typedef struct {
     uint32_t id;
@@ -74,14 +82,12 @@ typedef struct {
     uint8_t checklist_selection;
     bool timer_running;
     uint32_t timer_start_tick;
-    uint32_t pending_seconds;
-    bool hours_pending_nfc;
+    bool hours_pending_export;
+    bool checklist_log_saved;
+    bool exit_after_payload;
+    bool payload_view_active;
     uint32_t current_view;
-    bool nfc_in_progress;
-    NfcPurpose nfc_purpose;
-    FuriThread* nfc_thread;
     char notice[96];
-    char nfc_result[96];
     bool notice_dismiss_exits;
     MaintenanceViewId notice_return_view;
     char history[HISTORY_SIZE];
@@ -113,21 +119,18 @@ static void asset_services_path(const Asset* asset, char* path, size_t size) {
     snprintf(path, size, APP_DATA_PATH("%lu.svc"), (unsigned long)asset->id);
 }
 
+static void asset_nfc_path(const Asset* asset, char* path, size_t size) {
+    snprintf(path, size, APP_DATA_PATH("%lu.nfc"), (unsigned long)asset->id);
+}
+
 static void switch_view(MaintenanceApp* app, MaintenanceViewId view_id) {
     app->current_view = view_id;
     view_dispatcher_switch_to_view(app->dispatcher, view_id);
 }
 
-static void format_date(char date[DATE_SIZE]) {
-    FuriHalRtcDateTime datetime = {0};
-    furi_hal_rtc_get_datetime(&datetime);
-    snprintf(
-        date,
-        DATE_SIZE,
-        "%04u-%02u-%02u",
-        (unsigned)datetime.year,
-        (unsigned)datetime.month,
-        (unsigned)datetime.day);
+static void format_uptime(char timestamp[DATE_SIZE]) {
+    uint32_t seconds = furi_get_tick() / furi_kernel_get_tick_frequency();
+    snprintf(timestamp, DATE_SIZE, "T+%lus", (unsigned long)seconds);
 }
 
 static bool ensure_data_directory(MaintenanceApp* app) {
@@ -317,18 +320,12 @@ static bool append_service_log(MaintenanceApp* app) {
     File* file = storage_file_alloc(app->storage);
     bool success = false;
     if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
-        FuriHalRtcDateTime datetime = {0};
-        furi_hal_rtc_get_datetime(&datetime);
         char line[256];
         int length = snprintf(
             line,
             sizeof(line),
-            "%04u-%02u-%02u %02u:%02u  ",
-            (unsigned)datetime.year,
-            (unsigned)datetime.month,
-            (unsigned)datetime.day,
-            (unsigned)datetime.hour,
-            (unsigned)datetime.minute);
+            "T+%lu s  ",
+            (unsigned long)(furi_get_tick() / furi_kernel_get_tick_frequency()));
         for(uint8_t i = 0; (i < app->service_count) && (length > 0) &&
                            ((size_t)length < sizeof(line) - 2);
             i++) {
@@ -377,7 +374,11 @@ static bool add_asset(MaintenanceApp* app, const char* name) {
     return true;
 }
 
-static bool build_ndef_uri(MaintenanceApp* app, char* buffer, size_t size) {
+static bool build_service_uri(
+    MaintenanceApp* app,
+    char* buffer,
+    size_t size,
+    bool include_services) {
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     uint32_t seconds = asset->lifetime_seconds;
     if(app->timer_running) {
@@ -388,184 +389,184 @@ static bool build_ndef_uri(MaintenanceApp* app, char* buffer, size_t size) {
     }
     uint32_t hours = seconds / 3600U;
     uint32_t mask = 0;
-    if(app->nfc_purpose == NfcPurposeService) {
+    if(include_services) {
         for(uint8_t i = 0; i < app->service_count; i++) {
             if(app->service_checked[i]) mask |= 1U << i;
         }
     }
-    int length = snprintf(buffer, size, "m.io/?h=%lu&s=%04lx", (unsigned long)hours, (unsigned long)mask);
+    int length = snprintf(
+        buffer,
+        size,
+        "https://m.io/?h=%lu&s=%04lx",
+        (unsigned long)hours,
+        (unsigned long)mask);
     return (length > 0) && ((size_t)length < size);
 }
 
-static bool nfc_tx(FuriHalNfcTxRxContext* tx_rx, uint8_t* data, uint16_t bits) {
-    memcpy(tx_rx->tx_data, data, (bits + 7U) / 8U);
-    tx_rx->tx_bits = bits;
-    tx_rx->tx_rx_type = FuriHalNfcTxRxTypeDefault;
-    return furi_hal_nfc_tx_rx(tx_rx, 200);
+static bool encode_uri_ndef(
+    const char* uri,
+    uint8_t* buffer,
+    size_t buffer_size,
+    size_t* encoded_size) {
+    static const char uri_scheme[] = "https://";
+    if(strncmp(uri, uri_scheme, sizeof(uri_scheme) - 1U) != 0) return false;
+
+    const char* uri_suffix = uri + sizeof(uri_scheme) - 1U;
+    size_t uri_suffix_size = strlen(uri_suffix);
+    size_t payload_size = uri_suffix_size + 1U;
+    size_t record_size = payload_size + 4U;
+    size_t total_size = record_size + 3U;
+    if((record_size > UINT8_MAX) || (total_size > buffer_size)) return false;
+
+    buffer[0] = 0x03;
+    buffer[1] = (uint8_t)record_size;
+    buffer[2] = 0xD1;
+    buffer[3] = 0x01;
+    buffer[4] = (uint8_t)payload_size;
+    buffer[5] = 'U';
+    buffer[6] = 0x04;
+    memcpy(buffer + 7, uri_suffix, uri_suffix_size);
+    buffer[7U + uri_suffix_size] = 0xFE;
+    *encoded_size = total_size;
+    return true;
 }
 
-static bool nfc_write_page(
-    FuriHalNfcTxRxContext* tx_rx,
-    uint8_t page,
-    const uint8_t data[4]) {
-    uint8_t command[6] = {0xA2, page, data[0], data[1], data[2], data[3]};
-    if(!nfc_tx(tx_rx, command, sizeof(command) * 8U)) return false;
-    return (tx_rx->rx_bits == 4) && ((tx_rx->rx_data[0] & 0x0FU) == 0x0AU);
+static bool save_nfc_snapshot(MaintenanceApp* app, Nfc* nfc) {
+    MfUltralightData* tag_data = mf_ultralight_alloc();
+    bool saved = false;
+    if(mf_ultralight_poller_sync_read_card(nfc, tag_data, NULL) == MfUltralightErrorNone) {
+        NfcDevice* device = nfc_device_alloc();
+        nfc_device_set_data(device, NfcProtocolMfUltralight, tag_data);
+        char path[64];
+        asset_nfc_path(&app->assets[(uint8_t)app->selected_asset], path, sizeof(path));
+        saved = nfc_device_save(device, path);
+        nfc_device_free(device);
+    }
+    mf_ultralight_free(tag_data);
+    return saved;
 }
 
-static bool write_ntag_uri(MaintenanceApp* app) {
-    bool success = false;
-    FuriHalNfcTxRxContext tx_rx = {0};
-    FuriHalNfcDevData detected = {0};
-    char uri[URI_SIZE];
-    uint8_t ndef[128] = {0};
-    uint8_t page_data[4];
-    uint8_t existing_page[16];
-    uint16_t user_bytes = 0;
+static NfcWriteResult write_uri_to_tag(MaintenanceApp* app, const char* uri) {
+    uint8_t ndef[NFC_NDEF_BUFFER_SIZE];
+    size_t ndef_size = 0;
+    if(!encode_uri_ndef(uri, ndef, sizeof(ndef), &ndef_size)) return NfcWriteFailed;
 
-    if(!build_ndef_uri(app, uri, sizeof(uri))) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "NFC URI is too long");
-        return false;
-    }
-
-    furi_hal_nfc_exit_sleep();
-    if(!furi_hal_nfc_detect(&detected, 1200)) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "No NFC tag detected");
+    NfcWriteResult result = NfcWriteFailed;
+    Nfc* nfc = nfc_alloc();
+    NfcPoller* poller = nfc_poller_alloc(nfc, NfcProtocolMfUltralight);
+    if(!nfc_poller_detect(poller)) {
+        result = NfcWriteNoTag;
         goto cleanup;
     }
-    if(detected.type != FuriHalNfcTypeA) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Place an NTAG213/215/216");
-        goto cleanup;
-    }
+    nfc_poller_free(poller);
+    poller = NULL;
 
-    uint8_t get_version = 0x60;
-    if(!nfc_tx(&tx_rx, &get_version, 8) || (tx_rx.rx_bits != 64) ||
-       (tx_rx.rx_data[1] != 0x04) || (tx_rx.rx_data[2] != 0x04) ||
-       (tx_rx.rx_data[7] != 0x03)) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Unsupported NFC tag");
+    MfUltralightPage capability_page;
+    MfUltralightPage lock_page;
+    if((mf_ultralight_poller_sync_read_page(nfc, 3, &capability_page) !=
+        MfUltralightErrorNone) ||
+       (mf_ultralight_poller_sync_read_page(nfc, 2, &lock_page) != MfUltralightErrorNone)) {
         goto cleanup;
     }
-    switch(tx_rx.rx_data[6]) {
-    case 0x0F:
-        user_bytes = 144;
-        break;
-    case 0x11:
-        user_bytes = 504;
-        break;
-    case 0x13:
-        user_bytes = 888;
-        break;
-    default:
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Use NTAG213/215/216");
+    if(capability_page.data[0] != 0xE1) {
+        result = NfcWriteUnsupportedTag;
+        goto cleanup;
+    }
+    if(capability_page.data[3] || lock_page.data[2] || lock_page.data[3]) {
+        result = NfcWriteReadOnly;
         goto cleanup;
     }
 
-    uint8_t read_cc[2] = {0x30, 0x03};
-    if(!nfc_tx(&tx_rx, read_cc, sizeof(read_cc) * 8U) || (tx_rx.rx_bits != 128) ||
-       (tx_rx.rx_data[0] != 0xE1) || (tx_rx.rx_data[1] != 0x10) ||
-       (tx_rx.rx_data[2] == 0x00) || (tx_rx.rx_data[3] != 0x00)) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag is not writable NDEF");
+    size_t user_memory_size = (size_t)capability_page.data[2] * 8U;
+    if(ndef_size > user_memory_size) {
+        result = NfcWriteInsufficientSpace;
         goto cleanup;
     }
 
-    uint8_t read_page4[2] = {0x30, 0x04};
-    if(!nfc_tx(&tx_rx, read_page4, sizeof(read_page4) * 8U) || (tx_rx.rx_bits != 128)) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Could not read tag memory");
-        goto cleanup;
-    }
-    memcpy(existing_page, tx_rx.rx_data, sizeof(existing_page));
-    bool empty_tag = true;
-    for(size_t i = 0; i < sizeof(existing_page); i++) {
-        if(existing_page[i] != 0x00) empty_tag = false;
-    }
-    bool empty_ndef = (existing_page[0] == 0x03) && (existing_page[1] == 0x00) &&
-                      (existing_page[2] == 0xFE);
-    bool maintenance_ndef =
-        (existing_page[0] == 0x03) && (existing_page[2] == 0xD1) &&
-        (existing_page[3] == 0x01) && (existing_page[5] == 'U') &&
-        (existing_page[6] == 0x04) && (memcmp(&existing_page[7], "m.io/", 5) == 0);
-    if(!empty_tag && !empty_ndef && !maintenance_ndef) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag has unrelated existing data");
+    MfUltralightPage invalidated_page = {.data = {0x03, 0x00, 0xFE, 0x00}};
+    if(mf_ultralight_poller_sync_write_page(nfc, 4, &invalidated_page) !=
+       MfUltralightErrorNone) {
         goto cleanup;
     }
 
-    size_t uri_length = strlen(uri);
-    size_t payload_length = uri_length + 1;
-    size_t message_length = 5 + uri_length;
-    size_t tlv_length = message_length + 2;
-    if((payload_length > 255) || (tlv_length > user_bytes) || (tlv_length > sizeof(ndef))) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "NDEF data exceeds tag capacity");
-        goto cleanup;
-    }
-
-    ndef[0] = 0x03;
-    ndef[1] = (uint8_t)message_length;
-    ndef[2] = 0xD1;
-    ndef[3] = 0x01;
-    ndef[4] = (uint8_t)payload_length;
-    ndef[5] = 'U';
-    ndef[6] = 0x04;
-    memcpy(&ndef[7], uri, uri_length);
-    ndef[7 + uri_length] = 0xFE;
-
-    size_t pages = (tlv_length + 3U) / 4U;
-    uint8_t blank_page[4] = {0x03, 0x00, 0xFE, 0x00};
-    if(!nfc_write_page(&tx_rx, 4, blank_page)) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag write failed");
-        goto cleanup;
-    }
-    for(size_t page = 1; page < pages; page++) {
-        memset(page_data, 0, sizeof(page_data));
-        size_t offset = page * 4U;
-        size_t remaining = tlv_length - offset;
-        size_t amount = remaining < sizeof(page_data) ? remaining : sizeof(page_data);
-        memcpy(page_data, &ndef[offset], amount);
-        if(!nfc_write_page(&tx_rx, (uint8_t)(4U + page), page_data)) {
-            snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag write failed");
+    for(size_t offset = MF_ULTRALIGHT_PAGE_SIZE; offset < ndef_size;
+        offset += MF_ULTRALIGHT_PAGE_SIZE) {
+        MfUltralightPage page = {};
+        size_t remaining = ndef_size - offset;
+        size_t chunk_size =
+            remaining < MF_ULTRALIGHT_PAGE_SIZE ? remaining : MF_ULTRALIGHT_PAGE_SIZE;
+        memcpy(page.data, ndef + offset, chunk_size);
+        uint16_t page_number = (uint16_t)(4U + offset / MF_ULTRALIGHT_PAGE_SIZE);
+        if(mf_ultralight_poller_sync_write_page(nfc, page_number, &page) !=
+           MfUltralightErrorNone) {
             goto cleanup;
         }
     }
-    memcpy(page_data, ndef, sizeof(page_data));
-    if(!nfc_write_page(&tx_rx, 4, page_data)) {
-        snprintf(app->nfc_result, sizeof(app->nfc_result), "Tag commit failed");
+
+    MfUltralightPage first_page = {};
+    memcpy(first_page.data, ndef, sizeof(first_page.data));
+    if(mf_ultralight_poller_sync_write_page(nfc, 4, &first_page) != MfUltralightErrorNone) {
         goto cleanup;
     }
 
-    snprintf(app->nfc_result, sizeof(app->nfc_result), "NDEF written to NTAG");
-    success = true;
+    for(size_t offset = 0; offset < ndef_size; offset += MF_ULTRALIGHT_PAGE_SIZE) {
+        MfUltralightPage actual_page;
+        MfUltralightPage expected_page = {};
+        size_t remaining = ndef_size - offset;
+        size_t chunk_size =
+            remaining < MF_ULTRALIGHT_PAGE_SIZE ? remaining : MF_ULTRALIGHT_PAGE_SIZE;
+        memcpy(expected_page.data, ndef + offset, chunk_size);
+        uint16_t page_number = (uint16_t)(4U + offset / MF_ULTRALIGHT_PAGE_SIZE);
+        if((mf_ultralight_poller_sync_read_page(nfc, page_number, &actual_page) !=
+            MfUltralightErrorNone) ||
+           (memcmp(actual_page.data, expected_page.data, sizeof(actual_page.data)) != 0)) {
+            result = NfcWriteVerifyFailed;
+            goto cleanup;
+        }
+    }
+
+    result = save_nfc_snapshot(app, nfc) ? NfcWriteSuccess : NfcWriteSnapshotFailed;
 
 cleanup:
-    furi_hal_nfc_sleep();
-    return success;
+    if(poller) nfc_poller_free(poller);
+    nfc_free(nfc);
+    return result;
 }
 
-static int32_t nfc_thread_callback(void* context) {
-    MaintenanceApp* app = context;
-    bool success = write_ntag_uri(app);
-    view_dispatcher_send_custom_event(app->dispatcher, success ? 1U : 2U);
-    return 0;
-}
-
-static void begin_nfc_write(MaintenanceApp* app, NfcPurpose purpose) {
-    if(app->nfc_in_progress || (app->selected_asset < 0)) return;
-    app->nfc_purpose = purpose;
-    app->nfc_in_progress = true;
-    app->notice_return_view = purpose == NfcPurposeHours ? ViewExitPrompt : ViewProfile;
-    snprintf(app->notice, sizeof(app->notice), "Hold an NTAG213/215/216 nearby...");
-    switch_view(app, ViewNotice);
-    app->nfc_thread = furi_thread_alloc();
-    if(!app->nfc_thread) {
-        app->nfc_in_progress = false;
-        app->notice_dismiss_exits = false;
-        snprintf(app->notice, sizeof(app->notice), "Could not start NFC writer");
-        view_commit_model(app->notice_view, true);
-        return;
+static bool show_payload(MaintenanceApp* app, bool include_services) {
+    char uri[URI_SIZE];
+    if(!build_service_uri(app, uri, sizeof(uri), include_services)) {
+        show_notice(app, "Could not build URI payload", false);
+        return false;
     }
-    furi_thread_set_name(app->nfc_thread, "MaintenanceNfc");
-    furi_thread_set_stack_size(app->nfc_thread, 3072);
-    furi_thread_set_callback(app->nfc_thread, nfc_thread_callback);
-    furi_thread_set_context(app->nfc_thread, app);
-    furi_thread_start(app->nfc_thread);
+
+    NfcWriteResult result = write_uri_to_tag(app, uri);
+    if((result != NfcWriteSuccess) && (result != NfcWriteSnapshotFailed)) {
+        const char* message = "NFC write failed";
+        if(result == NfcWriteNoTag) message = "No compatible NFC tag found";
+        else if(result == NfcWriteUnsupportedTag) message = "Unsupported NFC tag";
+        else if(result == NfcWriteReadOnly) message = "NFC tag is locked";
+        else if(result == NfcWriteInsufficientSpace) message = "NFC tag has insufficient space";
+        else if(result == NfcWriteVerifyFailed) message = "NFC write verification failed";
+        show_notice(app, message, false);
+        return false;
+    }
+
+    char payload[160];
+    snprintf(
+        payload,
+        sizeof(payload),
+        result == NfcWriteSuccess ? "NDEF tag written and saved to SD.\n\n%s" :
+                                    "Tag written; SD snapshot failed.\n\n%s",
+        uri);
+    text_box_reset(app->text_box);
+    text_box_set_text(app->text_box, payload);
+    text_box_set_focus(app->text_box, TextBoxFocusStart);
+    app->exit_after_payload = app->current_view == ViewExitPrompt;
+    app->hours_pending_export = false;
+    app->payload_view_active = true;
+    switch_view(app, ViewHistory);
+    return true;
 }
 
 static void draw_equipment(Canvas* canvas, void* context) {
@@ -636,17 +637,17 @@ static void draw_checklist(Canvas* canvas, void* context) {
         canvas_set_color(canvas, ColorBlack);
     }
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 2, 62, "OK: toggle/save  Back");
+    canvas_draw_str(canvas, 2, 62, "OK: toggle/write  Back");
 }
 
 static void draw_notice(Canvas* canvas, void* context) {
     MaintenanceApp* app = context;
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 2, 11, app->nfc_in_progress ? "NFC write" : "Maintenance");
+    canvas_draw_str(canvas, 2, 11, "Maintenance");
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 3, 29, app->notice);
-    if(!app->nfc_in_progress) canvas_draw_str(canvas, 3, 57, "OK/Back to continue");
+    canvas_draw_str(canvas, 3, 57, "OK/Back to continue");
 }
 
 static void draw_exit_prompt(Canvas* canvas, void* context) {
@@ -659,8 +660,8 @@ static void draw_exit_prompt(Canvas* canvas, void* context) {
     char line[32];
     snprintf(line, sizeof(line), "%lu total hours", (unsigned long)(asset->lifetime_seconds / 3600U));
     canvas_draw_str(canvas, 3, 29, line);
-    canvas_draw_str(canvas, 3, 43, "OK: write to NFC tag");
-    canvas_draw_str(canvas, 3, 57, "Back: exit without tag");
+    canvas_draw_str(canvas, 3, 43, "OK: write hours to NFC");
+    canvas_draw_str(canvas, 3, 57, "Back: exit");
 }
 
 static bool equipment_input(InputEvent* event, void* context) {
@@ -680,7 +681,7 @@ static bool equipment_input(InputEvent* event, void* context) {
     }
     if(event->key == InputKeyOk) {
         if((app->asset_count > 0) && (app->selected_asset >= 0)) {
-            if(app->hours_pending_nfc) {
+            if(app->hours_pending_export) {
                 switch_view(app, ViewExitPrompt);
                 return true;
             }
@@ -709,6 +710,10 @@ static bool checklist_input(InputEvent* event, void* context) {
     }
     if(event->key == InputKeyOk) {
         if(app->checklist_selection < app->service_count) {
+            if(app->checklist_log_saved) {
+                show_notice(app, "Log saved; retry NFC or go Back", false);
+                return true;
+            }
             app->service_checked[app->checklist_selection] =
                 !app->service_checked[app->checklist_selection];
             view_commit_model(app->checklist_view, true);
@@ -721,15 +726,18 @@ static bool checklist_input(InputEvent* event, void* context) {
                 show_notice(app, "Select a service first", false);
                 return true;
             }
-            if(!append_service_log(app)) {
-                show_notice(app, "Could not save SD log", false);
-                return true;
+            if(!app->checklist_log_saved) {
+                if(!append_service_log(app)) {
+                    show_notice(app, "Could not save SD log", false);
+                    return true;
+                }
+                app->checklist_log_saved = true;
             }
-            format_date(app->assets[(uint8_t)app->selected_asset].last_service);
+            format_uptime(app->assets[(uint8_t)app->selected_asset].last_service);
             if(!write_asset_database(app)) {
                 FURI_LOG_E(TAG, "Could not update asset database");
             }
-            begin_nfc_write(app, NfcPurposeService);
+            if(show_payload(app, true)) app->checklist_log_saved = false;
         }
         return true;
     }
@@ -739,7 +747,6 @@ static bool checklist_input(InputEvent* event, void* context) {
 static bool notice_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     if((event->type != InputTypeShort) || (event->key != InputKeyOk)) return false;
-    if(app->nfc_in_progress) return true;
     if(app->notice_dismiss_exits) {
         view_dispatcher_stop(app->dispatcher);
     } else {
@@ -751,7 +758,8 @@ static bool notice_input(InputEvent* event, void* context) {
 static bool exit_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     if((event->type == InputTypeShort) && (event->key == InputKeyOk)) {
-        begin_nfc_write(app, NfcPurposeHours);
+        app->exit_after_payload = true;
+        show_payload(app, false);
         return true;
     }
     return false;
@@ -792,7 +800,7 @@ static void rebuild_profile_menu(MaintenanceApp* app) {
         snprintf(timer_label, sizeof(timer_label), "Start run timer");
     }
     submenu_add_item(app->profile_menu, timer_label, 3, profile_menu_callback, app);
-    submenu_add_item(app->profile_menu, "Write hours to NFC", 4, profile_menu_callback, app);
+    submenu_add_item(app->profile_menu, "Write hours to NFC tag", 4, profile_menu_callback, app);
 }
 
 static void main_menu_callback(void* context, uint32_t index) {
@@ -877,6 +885,7 @@ static void profile_menu_callback(void* context, uint32_t index) {
         switch_view(app, ViewHistory);
     } else if(index == 1) {
         memset(app->service_checked, 0, sizeof(app->service_checked));
+        app->checklist_log_saved = false;
         app->checklist_selection = 0;
         load_services(app);
         view_commit_model(app->checklist_view, true);
@@ -901,9 +910,8 @@ static void profile_menu_callback(void* context, uint32_t index) {
                 ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
             uint32_t seconds = (uint32_t)(added / 1000U);
             asset->lifetime_seconds += seconds;
-            app->pending_seconds += seconds;
             app->timer_running = false;
-            app->hours_pending_nfc = app->pending_seconds > 0;
+            app->hours_pending_export |= seconds > 0;
             if(!write_asset_database(app)) {
                 FURI_LOG_E(TAG, "Could not persist hour total");
                 show_notice(app, "Hours not saved to SD", false);
@@ -916,7 +924,7 @@ static void profile_menu_callback(void* context, uint32_t index) {
         rebuild_profile_menu(app);
         submenu_set_selected_item(app->profile_menu, 3);
     } else if(index == 4) {
-        begin_nfc_write(app, NfcPurposeManualHours);
+        show_payload(app, false);
     }
 }
 
@@ -928,35 +936,8 @@ static void tick_callback(void* context) {
     }
 }
 
-static bool custom_event_callback(void* context, uint32_t event) {
-    MaintenanceApp* app = context;
-    if(event != 1U && event != 2U) return false;
-    if(app->nfc_thread) {
-        furi_thread_join(app->nfc_thread);
-        furi_thread_free(app->nfc_thread);
-        app->nfc_thread = NULL;
-    }
-    app->nfc_in_progress = false;
-    snprintf(app->notice, sizeof(app->notice), "%s", app->nfc_result);
-    if(app->nfc_purpose == NfcPurposeHours) {
-        app->hours_pending_nfc = false;
-        app->pending_seconds = 0;
-        app->notice_dismiss_exits = true;
-    } else {
-        if((event == 1U) && (app->nfc_purpose == NfcPurposeManualHours)) {
-            app->hours_pending_nfc = false;
-            app->pending_seconds = 0;
-        }
-        app->notice_dismiss_exits = false;
-        app->notice_return_view = ViewProfile;
-    }
-    view_commit_model(app->notice_view, true);
-    return true;
-}
-
 static bool navigation_callback(void* context) {
     MaintenanceApp* app = context;
-    if(app->nfc_in_progress) return true;
     uint32_t current = app->current_view;
     if(current == ViewMain) {
         if(app->timer_running) {
@@ -965,14 +946,13 @@ static bool navigation_callback(void* context) {
                 ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
             uint32_t seconds = (uint32_t)(elapsed_ms / 1000U);
             app->assets[(uint8_t)app->selected_asset].lifetime_seconds += seconds;
-            app->pending_seconds += seconds;
             app->timer_running = false;
-            app->hours_pending_nfc = app->pending_seconds > 0;
+            app->hours_pending_export |= seconds > 0;
             if(!write_asset_database(app)) {
                 FURI_LOG_E(TAG, "Could not persist hour total on exit");
             }
         }
-        if(app->hours_pending_nfc) {
+        if(app->hours_pending_export) {
             switch_view(app, ViewExitPrompt);
             return true;
         }
@@ -983,7 +963,17 @@ static bool navigation_callback(void* context) {
     } else if(current == ViewProfile) {
         if(app->timer_running) return true;
         switch_view(app, ViewEquipment);
-    } else if((current == ViewHistory) || (current == ViewChecklist)) {
+    } else if(current == ViewHistory) {
+        if(app->payload_view_active && app->exit_after_payload) {
+            app->exit_after_payload = false;
+            app->payload_view_active = false;
+            view_dispatcher_stop(app->dispatcher);
+        } else {
+            app->payload_view_active = false;
+            switch_view(app, ViewProfile);
+        }
+    } else if(current == ViewChecklist) {
+        app->checklist_log_saved = false;
         switch_view(app, ViewProfile);
     } else if(current == ViewInput) {
         switch_view(app, app->input_kind == InputNewAsset ? ViewMain : ViewProfile);
@@ -994,7 +984,7 @@ static bool navigation_callback(void* context) {
             switch_view(app, app->notice_return_view);
         }
     } else if(current == ViewExitPrompt) {
-        app->hours_pending_nfc = false;
+        app->hours_pending_export = false;
         view_dispatcher_stop(app->dispatcher);
     } else {
         return false;
@@ -1018,7 +1008,6 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     view_dispatcher_enable_queue(app->dispatcher);
     view_dispatcher_set_event_callback_context(app->dispatcher, app);
     view_dispatcher_set_navigation_event_callback(app->dispatcher, navigation_callback);
-    view_dispatcher_set_custom_event_callback(app->dispatcher, custom_event_callback);
     view_dispatcher_set_tick_event_callback(app->dispatcher, tick_callback, 1000);
     view_dispatcher_attach_to_gui(app->dispatcher, gui, ViewDispatcherTypeFullscreen);
 
@@ -1082,12 +1071,6 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
 }
 
 static void maintenance_tracker_free(MaintenanceApp* app) {
-    if(app->nfc_thread) {
-        furi_thread_join(app->nfc_thread);
-        furi_thread_free(app->nfc_thread);
-        app->nfc_thread = NULL;
-    }
-
     view_dispatcher_remove_view(app->dispatcher, ViewMain);
     view_dispatcher_remove_view(app->dispatcher, ViewEquipment);
     view_dispatcher_remove_view(app->dispatcher, ViewProfile);
