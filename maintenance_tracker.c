@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <nfc/nfc.h>
 
 #define TAG "MaintenanceTracker"
 #define ASSET_LIMIT 24
@@ -1001,7 +1002,7 @@ static bool navigation_callback(void* context) {
     return true;
 }
 
-static MaintenanceApp* maintenance_app_alloc(void) {
+static MaintenanceApp* maintenance_tracker_alloc(void) {
     MaintenanceApp* app = malloc(sizeof(MaintenanceApp));
     furi_check(app);
     memset(app, 0, sizeof(*app));
@@ -1080,7 +1081,7 @@ static MaintenanceApp* maintenance_app_alloc(void) {
     return app;
 }
 
-static void maintenance_app_free(MaintenanceApp* app) {
+static void maintenance_tracker_free(MaintenanceApp* app) {
     if(app->nfc_thread) {
         furi_thread_join(app->nfc_thread);
         furi_thread_free(app->nfc_thread);
@@ -1110,13 +1111,13 @@ static void maintenance_app_free(MaintenanceApp* app) {
 
 int32_t maintenance_tracker_app(void* context) {
     UNUSED(context);
-    MaintenanceApp* app = maintenance_app_alloc();
+    MaintenanceApp* app = maintenance_tracker_alloc();
     switch_view(app, ViewMain);
     if(!app->storage_ready) {
         show_notice(app, "Storage unavailable; check SD card", false);
         app->notice_return_view = ViewMain;
     }
     view_dispatcher_run(app->dispatcher);
-    maintenance_app_free(app);
+    maintenance_tracker_free(app);
     return 0;
 }
