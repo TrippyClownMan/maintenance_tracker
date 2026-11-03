@@ -1,0 +1,15 @@
+name: "Flipper FAP Build"
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build FAP with FlipperFAP Actions
+        uses: joelewis012/flipper-fap-actions@v1
+        with:
+          repo_url: https://github.com
+          target_firmware: momentum
