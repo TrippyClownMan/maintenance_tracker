@@ -1,0 +1,79 @@
+name: Compile Maintenance Tracker FAP
+
+on:
+  push:
+    paths:
+      - "applications_user/maintenance_tracker/**"
+      - ".github/workflows/compile-maintenance-tracker.yml"
+  pull_request:
+    paths:
+      - "applications_user/maintenance_tracker/**"
+      - ".github/workflows/compile-maintenance-tracker.yml"
+  workflow_dispatch:
+    inputs:
+      firmware:
+        description: Target firmware
+        required: true
+        type: choice
+        options:
+          - official
+          - momentum
+          - unleashed
+        default: official
+      channel:
+        description: Firmware channel
+        required: true
+        type: choice
+        options:
+          - release
+          - dev
+        default: release
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FIRMWARE: ${{ inputs.firmware || 'official' }}
+      CHANNEL: ${{ inputs.channel || 'release' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select firmware SDK
+        shell: bash
+        run: |
+          case "$FIRMWARE" in
+            official)
+              echo "SDK_INDEX_URL=https://update.flipperzero.one/firmware/directory.json" >> "$GITHUB_ENV"
+              ;;
+            momentum)
+              echo "SDK_INDEX_URL=https://up.momentum-fw.dev/firmware/directory.json" >> "$GITHUB_ENV"
+              ;;
+            unleashed)
+              echo "SDK_INDEX_URL=https://up.unleashedflip.com/directory.json" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::Unsupported firmware: $FIRMWARE"
+              exit 1
+              ;;
+          esac
+
+      - name: Build FAP
+        id: build
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1.3
+        with:
+          app-dir: applications_user/maintenance_tracker
+          sdk-index-url: ${{ env.SDK_INDEX_URL }}
+          sdk-channel: ${{ env.CHANNEL }}
+
+      - name: Upload FAP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance_tracker-${{ env.FIRMWARE }}-${{ env.CHANNEL }}
+          path: ${{ steps.build.outputs.fap-dir }}/*.fap
+          if-no-files-found: error
+          retention-days: 30
