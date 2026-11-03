@@ -6,5 +6,5 @@ App(
     requires=["gui", "storage", "nfc"],
     stack_size=4 * 1024,
     fap_category="Tools",
-    fap_description="Equipment maintenance logs and NFC service records",
+    fap_description="Equipment maintenance logs and NFC URI tag writing",
 )
