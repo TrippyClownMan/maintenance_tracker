@@ -1,4 +1,6 @@
 #include <furi.h>
+#include <furi_hal_rtc.h>
+#include <datetime/datetime.h>
 #include <gui/gui.h>
 #include <gui/view.h>
 #include <gui/view_dispatcher.h>
@@ -24,6 +26,8 @@
 #define HISTORY_SIZE 4096
 #define URI_SIZE 96
 #define NFC_NDEF_BUFFER_SIZE (URI_SIZE + 8U)
+#define ASSET_UID_TEXT_SIZE 25
+#define TRACKER_LOG_PATH EXT_PATH("apps_data/maintenance_tracker/log.txt")
 
 typedef enum {
     ViewMain,
@@ -33,8 +37,13 @@ typedef enum {
     ViewHistory,
     ViewChecklist,
     ViewNotice,
-    ViewExitPrompt,
+    ViewTracker,
 } MaintenanceViewId;
+
+typedef enum {
+    TrackerStateIdle,
+    TrackerStateRunning,
+} TrackerState;
 
 typedef enum {
     InputNewAsset,
@@ -68,7 +77,7 @@ typedef struct {
     View* equipment_view;
     View* checklist_view;
     View* notice_view;
-    View* exit_view;
+    View* tracker_view;
     Storage* storage;
     Asset assets[ASSET_LIMIT];
     uint8_t asset_count;
@@ -80,12 +89,12 @@ typedef struct {
     bool service_checked[SERVICE_LIMIT];
     uint8_t service_count;
     uint8_t checklist_selection;
-    bool timer_running;
-    uint32_t timer_start_tick;
-    bool hours_pending_export;
+    TrackerState tracker_state;
+    uint32_t session_start_timestamp;
+    uint32_t chip_accumulated_seconds;
+    char session_uid[ASSET_UID_TEXT_SIZE];
+    char session_asset_name[ASSET_NAME_SIZE];
     bool checklist_log_saved;
-    bool exit_after_payload;
-    bool payload_view_active;
     uint32_t current_view;
     char notice[96];
     bool notice_dismiss_exits;
@@ -106,42 +115,202 @@ static void text_input_callback(void* context);
 static void profile_menu_callback(void* context, uint32_t index);
 static void rebuild_profile_menu(MaintenanceApp* app);
 static void show_notice(MaintenanceApp* app, const char* message, bool exits);
+static bool tracker_input(InputEvent* event, void* context);
 
+// Returns the shared SD-card path for the asset database.
 static const char* asset_db_path(void) {
     return APP_DATA_PATH("assets.tsv");
 }
 
+// Builds a stable per-asset path for its maintenance history.
 static void asset_log_path(const Asset* asset, char* path, size_t size) {
     snprintf(path, size, APP_DATA_PATH("%lu.txt"), (unsigned long)asset->id);
 }
 
+// Builds a stable per-asset path for its custom service list.
 static void asset_services_path(const Asset* asset, char* path, size_t size) {
     snprintf(path, size, APP_DATA_PATH("%lu.svc"), (unsigned long)asset->id);
 }
 
+// Builds the path where a scanned and written NFC tag snapshot is stored.
 static void asset_nfc_path(const Asset* asset, char* path, size_t size) {
     snprintf(path, size, APP_DATA_PATH("%lu.nfc"), (unsigned long)asset->id);
 }
 
+// Updates the active view and keeps the current-view state in sync for callbacks.
 static void switch_view(MaintenanceApp* app, MaintenanceViewId view_id) {
     app->current_view = view_id;
     view_dispatcher_switch_to_view(app->dispatcher, view_id);
 }
 
+// Formats the current device uptime as a short timestamp (not wall-clock time).
 static void format_uptime(char timestamp[DATE_SIZE]) {
     uint32_t seconds = furi_get_tick() / furi_kernel_get_tick_frequency();
     snprintf(timestamp, DATE_SIZE, "T+%lus", (unsigned long)seconds);
 }
 
+// Ensures the app's SD-card data directory exists before files are accessed.
 static bool ensure_data_directory(MaintenanceApp* app) {
     FS_Error error = storage_common_mkdir(app->storage, "/ext/apps_data/maintenance_tracker");
     if((error != FSE_OK) && (error != FSE_EXIST)) {
         FURI_LOG_E(TAG, "Cannot create app data directory: %s", filesystem_api_error_get_desc(error));
         return false;
     }
-    return true;
+
+    File* file = storage_file_alloc(app->storage);
+    bool ready = storage_file_open(file, TRACKER_LOG_PATH, FSAM_WRITE, FSOM_OPEN_APPEND);
+    if(ready && !storage_file_close(file)) ready = false;
+    if(!ready) FURI_LOG_E(TAG, "Cannot initialize clock-in/out log");
+    storage_file_free(file);
+    return ready;
 }
 
+// Restores the lifetime total and open session state represented by one log record.
+static void restore_tracker_log_line(MaintenanceApp* app, char* line) {
+    char* total_field = strrchr(line, '|');
+    if(total_field) {
+        char* end = NULL;
+        unsigned long total = strtoul(total_field + 1, &end, 10);
+        if((end != total_field + 1) && (total <= UINT32_MAX)) {
+            app->chip_accumulated_seconds = (uint32_t)total;
+        }
+    }
+
+    char* uid_field = strchr(line, '|');
+    if(!uid_field) return;
+    char* event_field = strchr(uid_field + 1, '|');
+    if(!event_field) return;
+    *uid_field++ = '\0';
+    *event_field++ = '\0';
+    while(*uid_field == ' ') uid_field++;
+    while(*event_field == ' ') event_field++;
+    char* uid_end = uid_field + strlen(uid_field);
+    while((uid_end > uid_field) && (uid_end[-1] == ' ')) *--uid_end = '\0';
+    char* event_end = strchr(event_field, '|');
+    if(event_end) {
+        while((event_end > event_field) && (event_end[-1] == ' ')) *--event_end = '\0';
+    }
+
+    if(strcmp(event_field, "CLOCK OUT") == 0) {
+        app->tracker_state = TrackerStateIdle;
+        app->session_start_timestamp = 0;
+        app->session_uid[0] = '\0';
+        app->session_asset_name[0] = '\0';
+    } else if(strcmp(event_field, "CLOCK IN") == 0) {
+        unsigned int year, month, day, hour, minute, second;
+        if(sscanf(
+               line,
+               "%4u-%2u-%2u %2u:%2u:%2u",
+               &year,
+               &month,
+               &day,
+               &hour,
+               &minute,
+               &second) != 6) {
+            return;
+        }
+        DateTime datetime = {
+            .year = (uint16_t)year,
+            .month = (uint8_t)month,
+            .day = (uint8_t)day,
+            .hour = (uint8_t)hour,
+            .minute = (uint8_t)minute,
+            .second = (uint8_t)second,
+            .weekday = 1,
+        };
+        if(!datetime_validate_datetime(&datetime) ||
+           (strlen(uid_field) >= sizeof(app->session_uid))) {
+            return;
+        }
+        app->session_start_timestamp = datetime_datetime_to_timestamp(&datetime);
+        snprintf(app->session_uid, sizeof(app->session_uid), "%s", uid_field);
+        snprintf(
+            app->session_asset_name,
+            sizeof(app->session_asset_name),
+            "%s",
+            "Recovered session");
+        app->tracker_state = TrackerStateRunning;
+    }
+}
+
+// Restores the lifetime runtime and any unfinished session from the event log.
+static bool load_tracker_total(MaintenanceApp* app) {
+    File* file = storage_file_alloc(app->storage);
+    if(!storage_file_open(file, TRACKER_LOG_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        FURI_LOG_E(TAG, "Cannot read clock-in/out log");
+        storage_file_free(file);
+        return false;
+    }
+
+    char line[160];
+    size_t line_length = 0;
+    bool line_overflow = false;
+    char chunk[64];
+    uint16_t count;
+    app->chip_accumulated_seconds = 0;
+    while((count = storage_file_read(file, chunk, sizeof(chunk))) > 0) {
+        for(uint16_t i = 0; i < count; i++) {
+            if(chunk[i] == '\n') {
+                if(line_length && !line_overflow) {
+                    line[line_length] = '\0';
+                    restore_tracker_log_line(app, line);
+                }
+                line_length = 0;
+                line_overflow = false;
+            } else if((line_length + 1U) < sizeof(line)) {
+                line[line_length++] = chunk[i];
+            } else {
+                line_overflow = true;
+            }
+        }
+    }
+    if(line_length && !line_overflow) {
+        line[line_length] = '\0';
+        restore_tracker_log_line(app, line);
+    }
+
+    bool success = storage_file_close(file);
+    storage_file_free(file);
+    return success;
+}
+
+// Appends one clock event with its local time, UID, session duration, and new total.
+static bool append_tracker_event(
+    MaintenanceApp* app,
+    const DateTime* datetime,
+    const char* uid,
+    const char* event_type,
+    uint32_t session_duration,
+    uint32_t grand_total) {
+    File* file = storage_file_alloc(app->storage);
+    bool success = false;
+    if(storage_file_open(file, TRACKER_LOG_PATH, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        char line[160];
+        int length = snprintf(
+            line,
+            sizeof(line),
+            "%04u-%02u-%02u %02u:%02u:%02u | %s | %s | %lu s | %lu s\n",
+            (unsigned)datetime->year,
+            (unsigned)datetime->month,
+            (unsigned)datetime->day,
+            (unsigned)datetime->hour,
+            (unsigned)datetime->minute,
+            (unsigned)datetime->second,
+            uid,
+            event_type,
+            (unsigned long)session_duration,
+            (unsigned long)grand_total);
+        success = (length > 0) && ((size_t)length < sizeof(line)) &&
+                  (storage_file_write(file, line, (uint16_t)length) == (uint16_t)length);
+        if(!storage_file_close(file)) success = false;
+    } else {
+        FURI_LOG_E(TAG, "Cannot open clock-in/out log for append");
+    }
+    storage_file_free(file);
+    return success;
+}
+
+// Rewrites all asset records to the tab-separated SD-card database.
 static bool write_asset_database(MaintenanceApp* app) {
     File* file = storage_file_alloc(app->storage);
     bool success = false;
@@ -172,6 +341,7 @@ static bool write_asset_database(MaintenanceApp* app) {
     return success;
 }
 
+// Parses one database row, ignoring malformed records and enforcing field limits.
 static void parse_asset_line(MaintenanceApp* app, char* line) {
     if(app->asset_count >= ASSET_LIMIT) return;
 
@@ -203,6 +373,7 @@ static void parse_asset_line(MaintenanceApp* app, char* line) {
     snprintf(asset->name, sizeof(asset->name), "%s", name_text);
 }
 
+// Loads asset records from SD, creating an empty database on first launch.
 static bool load_assets(MaintenanceApp* app) {
     File* file = storage_file_alloc(app->storage);
     if(!storage_file_open(file, asset_db_path(), FSAM_READ, FSOM_OPEN_EXISTING)) {
@@ -242,6 +413,7 @@ static bool load_assets(MaintenanceApp* app) {
     return success;
 }
 
+// Resets the service list to defaults, then appends this asset's custom entries.
 static void load_services(MaintenanceApp* app) {
     app->service_count = standard_service_count;
     for(uint8_t i = 0; i < standard_service_count; i++) {
@@ -295,6 +467,7 @@ static void load_services(MaintenanceApp* app) {
     storage_file_free(file);
 }
 
+// Appends a user-defined service name to the selected asset's service file.
 static bool append_custom_service(MaintenanceApp* app, const char* service) {
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char path[64];
@@ -313,6 +486,7 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {
     return success;
 }
 
+// Appends the selected maintenance items and uptime timestamp to the asset log.
 static bool append_service_log(MaintenanceApp* app) {
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char path[64];
@@ -355,6 +529,7 @@ static bool append_service_log(MaintenanceApp* app) {
     return success;
 }
 
+// Adds a uniquely numbered asset and persists it, rolling back if saving fails.
 static bool add_asset(MaintenanceApp* app, const char* name) {
     if(app->asset_count >= ASSET_LIMIT) return false;
     Asset* asset = &app->assets[app->asset_count];
@@ -374,20 +549,13 @@ static bool add_asset(MaintenanceApp* app, const char* name) {
     return true;
 }
 
+// Builds the compact web URI containing lifetime hours and an optional service bitmask.
 static bool build_service_uri(
     MaintenanceApp* app,
     char* buffer,
     size_t size,
     bool include_services) {
-    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    uint32_t seconds = asset->lifetime_seconds;
-    if(app->timer_running) {
-        uint32_t elapsed_ticks = (uint32_t)(furi_get_tick() - app->timer_start_tick);
-        uint64_t elapsed_ms =
-            ((uint64_t)elapsed_ticks * 1000U) / furi_kernel_get_tick_frequency();
-        seconds += (uint32_t)(elapsed_ms / 1000U);
-    }
-    uint32_t hours = seconds / 3600U;
+    uint32_t hours = app->chip_accumulated_seconds / 3600U;
     uint32_t mask = 0;
     if(include_services) {
         for(uint8_t i = 0; i < app->service_count; i++) {
@@ -403,6 +571,7 @@ static bool build_service_uri(
     return (length > 0) && ((size_t)length < size);
 }
 
+// Encodes an https URI as an NFC Forum Type 2 NDEF message with a URI record.
 static bool encode_uri_ndef(
     const char* uri,
     uint8_t* buffer,
@@ -431,6 +600,7 @@ static bool encode_uri_ndef(
     return true;
 }
 
+// Reads the tag after writing and saves its protocol data as a Flipper NFC file.
 static bool save_nfc_snapshot(MaintenanceApp* app, Nfc* nfc) {
     MfUltralightData* tag_data = mf_ultralight_alloc();
     bool saved = false;
@@ -446,6 +616,7 @@ static bool save_nfc_snapshot(MaintenanceApp* app, Nfc* nfc) {
     return saved;
 }
 
+// Detects a Type 2 tag, validates writable capacity, writes and verifies the NDEF URI.
 static NfcWriteResult write_uri_to_tag(MaintenanceApp* app, const char* uri) {
     uint8_t ndef[NFC_NDEF_BUFFER_SIZE];
     size_t ndef_size = 0;
@@ -533,6 +704,7 @@ cleanup:
     return result;
 }
 
+// Writes the requested payload to a tag, then displays status and the encoded URI.
 static bool show_payload(MaintenanceApp* app, bool include_services) {
     char uri[URI_SIZE];
     if(!build_service_uri(app, uri, sizeof(uri), include_services)) {
@@ -562,13 +734,135 @@ static bool show_payload(MaintenanceApp* app, bool include_services) {
     text_box_reset(app->text_box);
     text_box_set_text(app->text_box, payload);
     text_box_set_focus(app->text_box, TextBoxFocusStart);
-    app->exit_after_payload = app->current_view == ViewExitPrompt;
-    app->hours_pending_export = false;
-    app->payload_view_active = true;
     switch_view(app, ViewHistory);
     return true;
 }
 
+// Reads a supported NTAG/Ultralight asset tag and returns its UID as uppercase hex.
+static bool scan_asset_uid(char uid_text[ASSET_UID_TEXT_SIZE]) {
+    Nfc* nfc = nfc_alloc();
+    MfUltralightData* tag_data = mf_ultralight_alloc();
+    bool success = false;
+    if(mf_ultralight_poller_sync_read_card(nfc, tag_data, NULL) == MfUltralightErrorNone) {
+        size_t uid_length = 0;
+        const uint8_t* uid = mf_ultralight_get_uid(tag_data, &uid_length);
+        if(uid && (uid_length > 0) && (uid_length <= (ASSET_UID_TEXT_SIZE - 1U) / 2U)) {
+            for(size_t i = 0; i < uid_length; i++) {
+                snprintf(uid_text + (i * 2U), 3, "%02X", (unsigned)uid[i]);
+            }
+            success = true;
+        }
+    }
+    mf_ultralight_free(tag_data);
+    nfc_free(nfc);
+    return success;
+}
+
+// Captures a validated wall-clock time and converts it to the firmware timestamp.
+static bool get_current_timestamp(DateTime* datetime, uint32_t* timestamp) {
+    furi_hal_rtc_get_datetime(datetime);
+    if(!datetime_validate_datetime(datetime)) return false;
+    *timestamp = datetime_datetime_to_timestamp(datetime);
+    return true;
+}
+
+// Applies a scanned tag as either Clock In or Clock Out and logs the transition.
+static bool process_asset_scan(MaintenanceApp* app) {
+    char uid[ASSET_UID_TEXT_SIZE] = {0};
+    if(!scan_asset_uid(uid)) {
+        show_notice(app, "Could not read NTAG/Ultralight tag", false);
+        return false;
+    }
+
+    DateTime datetime = {0};
+    uint32_t timestamp = 0;
+    if(!get_current_timestamp(&datetime, &timestamp)) {
+        show_notice(app, "Device date/time is invalid", false);
+        return false;
+    }
+
+    if(app->tracker_state == TrackerStateIdle) {
+        Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+        if(!append_tracker_event(
+               app, &datetime, uid, "CLOCK IN", 0, app->chip_accumulated_seconds)) {
+            show_notice(app, "Could not save Clock In event", false);
+            return false;
+        }
+        app->session_start_timestamp = timestamp;
+        snprintf(app->session_uid, sizeof(app->session_uid), "%s", uid);
+        snprintf(app->session_asset_name, sizeof(app->session_asset_name), "%s", asset->name);
+        app->tracker_state = TrackerStateRunning;
+        return true;
+    }
+
+    if(strcmp(uid, app->session_uid) != 0) {
+        show_notice(app, "Scan the same asset tag to Clock Out", false);
+        return false;
+    }
+    if(timestamp < app->session_start_timestamp) {
+        show_notice(app, "Clock is earlier than Clock In time", false);
+        return false;
+    }
+
+    uint32_t duration = timestamp - app->session_start_timestamp;
+    if((UINT32_MAX - app->chip_accumulated_seconds) < duration) {
+        show_notice(app, "Accumulated runtime limit reached", false);
+        return false;
+    }
+    uint32_t new_total = app->chip_accumulated_seconds + duration;
+    if(!append_tracker_event(
+           app, &datetime, uid, "CLOCK OUT", duration, new_total)) {
+        show_notice(app, "Could not save Clock Out event", false);
+        return false;
+    }
+
+    app->chip_accumulated_seconds = new_total;
+    app->session_start_timestamp = 0;
+    app->session_uid[0] = '\0';
+    app->session_asset_name[0] = '\0';
+    app->tracker_state = TrackerStateIdle;
+    return true;
+}
+
+// Draws only the tracker state, stored asset/UID text, and accumulated runtime.
+static void draw_tracker(Canvas* canvas, void* context) {
+    MaintenanceApp* app = context;
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 10, "Clock In / Clock Out");
+    canvas_set_font(canvas, FontSecondary);
+    if(app->tracker_state == TrackerStateRunning) {
+        canvas_draw_str(canvas, 3, 25, "State: RUNNING");
+        canvas_draw_str(canvas, 3, 36, app->session_asset_name);
+        canvas_draw_str(canvas, 3, 47, app->session_uid);
+        canvas_draw_str(canvas, 3, 58, "OK: scan same tag to out");
+    } else {
+        Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+        char total[32];
+        snprintf(total, sizeof(total), "Total: %lu sec", (unsigned long)app->chip_accumulated_seconds);
+        canvas_draw_str(canvas, 3, 25, "State: IDLE");
+        canvas_draw_str(canvas, 3, 36, asset->name);
+        canvas_draw_str(canvas, 3, 47, total);
+        canvas_draw_str(canvas, 3, 58, "OK: scan tag to clock in");
+    }
+}
+
+// Scans a tag when OK is pressed; Back returns to the selected asset profile.
+static bool tracker_input(InputEvent* event, void* context) {
+    MaintenanceApp* app = context;
+    if(event->type != InputTypeShort) return false;
+    if(event->key == InputKeyBack) {
+        switch_view(app, ViewProfile);
+        return true;
+    }
+    if(event->key == InputKeyOk) {
+        if(process_asset_scan(app)) view_commit_model(app->tracker_view, true);
+        return true;
+    }
+    return false;
+}
+
+// Draws the scrollable equipment selector and the selected asset's last-service date.
 static void draw_equipment(Canvas* canvas, void* context) {
     MaintenanceApp* app = context;
     canvas_clear(canvas);
@@ -603,6 +897,7 @@ static void draw_equipment(Canvas* canvas, void* context) {
     canvas_draw_str(canvas, 2, 62, "Up/Down  OK: open");
 }
 
+// Draws the service checklist, selection state, and final write action.
 static void draw_checklist(Canvas* canvas, void* context) {
     MaintenanceApp* app = context;
     canvas_clear(canvas);
@@ -640,6 +935,7 @@ static void draw_checklist(Canvas* canvas, void* context) {
     canvas_draw_str(canvas, 2, 62, "OK: toggle/write  Back");
 }
 
+// Renders the app's short status or error message.
 static void draw_notice(Canvas* canvas, void* context) {
     MaintenanceApp* app = context;
     canvas_clear(canvas);
@@ -650,20 +946,7 @@ static void draw_notice(Canvas* canvas, void* context) {
     canvas_draw_str(canvas, 3, 57, "OK/Back to continue");
 }
 
-static void draw_exit_prompt(Canvas* canvas, void* context) {
-    MaintenanceApp* app = context;
-    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    canvas_clear(canvas);
-    canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 2, 12, "Hours updated");
-    canvas_set_font(canvas, FontSecondary);
-    char line[32];
-    snprintf(line, sizeof(line), "%lu total hours", (unsigned long)(asset->lifetime_seconds / 3600U));
-    canvas_draw_str(canvas, 3, 29, line);
-    canvas_draw_str(canvas, 3, 43, "OK: write hours to NFC");
-    canvas_draw_str(canvas, 3, 57, "Back: exit");
-}
-
+// Handles equipment-list navigation and opens the selected asset profile.
 static bool equipment_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     if(event->type != InputTypeShort) return false;
@@ -681,10 +964,6 @@ static bool equipment_input(InputEvent* event, void* context) {
     }
     if(event->key == InputKeyOk) {
         if((app->asset_count > 0) && (app->selected_asset >= 0)) {
-            if(app->hours_pending_export) {
-                switch_view(app, ViewExitPrompt);
-                return true;
-            }
             load_services(app);
             rebuild_profile_menu(app);
             switch_view(app, ViewProfile);
@@ -694,6 +973,7 @@ static bool equipment_input(InputEvent* event, void* context) {
     return false;
 }
 
+// Toggles service selections, saves the log once, and retries NFC writing as needed.
 static bool checklist_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     if(event->type != InputTypeShort) return false;
@@ -744,6 +1024,7 @@ static bool checklist_input(InputEvent* event, void* context) {
     return false;
 }
 
+// Dismisses a notice and restores its recorded return view.
 static bool notice_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     if((event->type != InputTypeShort) || (event->key != InputKeyOk)) return false;
@@ -755,16 +1036,7 @@ static bool notice_input(InputEvent* event, void* context) {
     return true;
 }
 
-static bool exit_input(InputEvent* event, void* context) {
-    MaintenanceApp* app = context;
-    if((event->type == InputTypeShort) && (event->key == InputKeyOk)) {
-        app->exit_after_payload = true;
-        show_payload(app, false);
-        return true;
-    }
-    return false;
-}
-
+// Displays a notice and records where the user should return when it is dismissed.
 static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
     snprintf(app->notice, sizeof(app->notice), "%s", message);
     app->notice_dismiss_exits = exits;
@@ -776,6 +1048,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
     switch_view(app, ViewNotice);
 }
 
+// Rebuilds the selected asset menu with its clock-tracking action.
 static void rebuild_profile_menu(MaintenanceApp* app) {
     submenu_reset(app->profile_menu);
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
@@ -786,23 +1059,11 @@ static void rebuild_profile_menu(MaintenanceApp* app) {
     submenu_add_item(app->profile_menu, "Log Service Action", 1, profile_menu_callback, app);
     submenu_add_item(
         app->profile_menu, "Add Custom Service Type", 2, profile_menu_callback, app);
-    char timer_label[40];
-    if(app->timer_running) {
-        uint32_t elapsed = (uint32_t)(furi_get_tick() - app->timer_start_tick);
-        uint64_t seconds = ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
-        snprintf(
-            timer_label,
-            sizeof(timer_label),
-            "Stop timer (%lum %lus)",
-            (unsigned long)(seconds / 60U),
-            (unsigned long)(seconds % 60U));
-    } else {
-        snprintf(timer_label, sizeof(timer_label), "Start run timer");
-    }
-    submenu_add_item(app->profile_menu, timer_label, 3, profile_menu_callback, app);
+    submenu_add_item(app->profile_menu, "Clock In / Out: Scan Tag", 3, profile_menu_callback, app);
     submenu_add_item(app->profile_menu, "Write hours to NFC tag", 4, profile_menu_callback, app);
 }
 
+// Routes main-menu selections to equipment browsing or new-asset input.
 static void main_menu_callback(void* context, uint32_t index) {
     MaintenanceApp* app = context;
     if(index == 0) {
@@ -824,6 +1085,7 @@ static void main_menu_callback(void* context, uint32_t index) {
     }
 }
 
+// Validates text input, then creates an asset or appends a custom service.
 static void text_input_callback(void* context) {
     MaintenanceApp* app = context;
     if((app->input_buffer[0] == '\0') ||
@@ -856,6 +1118,7 @@ static void text_input_callback(void* context) {
     }
 }
 
+// Handles profile actions: history, checklist, custom service, clock tracking, and NFC write.
 static void profile_menu_callback(void* context, uint32_t index) {
     MaintenanceApp* app = context;
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
@@ -904,56 +1167,19 @@ static void profile_menu_callback(void* context, uint32_t index) {
             true);
         switch_view(app, ViewInput);
     } else if(index == 3) {
-        if(app->timer_running) {
-            uint32_t elapsed = (uint32_t)(furi_get_tick() - app->timer_start_tick);
-            uint64_t added =
-                ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
-            uint32_t seconds = (uint32_t)(added / 1000U);
-            asset->lifetime_seconds += seconds;
-            app->timer_running = false;
-            app->hours_pending_export |= seconds > 0;
-            if(!write_asset_database(app)) {
-                FURI_LOG_E(TAG, "Could not persist hour total");
-                show_notice(app, "Hours not saved to SD", false);
-                return;
-            }
-        } else {
-            app->timer_start_tick = furi_get_tick();
-            app->timer_running = true;
-        }
-        rebuild_profile_menu(app);
-        submenu_set_selected_item(app->profile_menu, 3);
+        switch_view(app, ViewTracker);
     } else if(index == 4) {
         show_payload(app, false);
     }
 }
 
-static void tick_callback(void* context) {
-    MaintenanceApp* app = context;
-    if(app->timer_running && (app->current_view == ViewProfile)) {
-        rebuild_profile_menu(app);
-        submenu_set_selected_item(app->profile_menu, 3);
-    }
-}
-
+// Implements Back navigation and prevents exiting with an unfinished clocked-in session.
 static bool navigation_callback(void* context) {
     MaintenanceApp* app = context;
     uint32_t current = app->current_view;
     if(current == ViewMain) {
-        if(app->timer_running) {
-            uint32_t elapsed = (uint32_t)(furi_get_tick() - app->timer_start_tick);
-            uint64_t elapsed_ms =
-                ((uint64_t)elapsed * 1000U) / furi_kernel_get_tick_frequency();
-            uint32_t seconds = (uint32_t)(elapsed_ms / 1000U);
-            app->assets[(uint8_t)app->selected_asset].lifetime_seconds += seconds;
-            app->timer_running = false;
-            app->hours_pending_export |= seconds > 0;
-            if(!write_asset_database(app)) {
-                FURI_LOG_E(TAG, "Could not persist hour total on exit");
-            }
-        }
-        if(app->hours_pending_export) {
-            switch_view(app, ViewExitPrompt);
+        if(app->tracker_state == TrackerStateRunning) {
+            show_notice(app, "Clock Out before exiting", false);
             return true;
         }
         return false;
@@ -961,19 +1187,13 @@ static bool navigation_callback(void* context) {
     if(current == ViewEquipment) {
         switch_view(app, ViewMain);
     } else if(current == ViewProfile) {
-        if(app->timer_running) return true;
         switch_view(app, ViewEquipment);
     } else if(current == ViewHistory) {
-        if(app->payload_view_active && app->exit_after_payload) {
-            app->exit_after_payload = false;
-            app->payload_view_active = false;
-            view_dispatcher_stop(app->dispatcher);
-        } else {
-            app->payload_view_active = false;
-            switch_view(app, ViewProfile);
-        }
+        switch_view(app, ViewProfile);
     } else if(current == ViewChecklist) {
         app->checklist_log_saved = false;
+        switch_view(app, ViewProfile);
+    } else if(current == ViewTracker) {
         switch_view(app, ViewProfile);
     } else if(current == ViewInput) {
         switch_view(app, app->input_kind == InputNewAsset ? ViewMain : ViewProfile);
@@ -983,22 +1203,21 @@ static bool navigation_callback(void* context) {
         } else {
             switch_view(app, app->notice_return_view);
         }
-    } else if(current == ViewExitPrompt) {
-        app->hours_pending_export = false;
-        view_dispatcher_stop(app->dispatcher);
     } else {
         return false;
     }
     return true;
 }
 
+// Allocates app state, opens storage, builds views, and attaches the dispatcher to the GUI.
 static MaintenanceApp* maintenance_tracker_alloc(void) {
     MaintenanceApp* app = malloc(sizeof(MaintenanceApp));
     furi_check(app);
     memset(app, 0, sizeof(*app));
     app->selected_asset = -1;
     app->storage = furi_record_open(RECORD_STORAGE);
-    app->storage_ready = ensure_data_directory(app) && load_assets(app);
+    app->storage_ready =
+        ensure_data_directory(app) && load_assets(app) && load_tracker_total(app);
     if(!app->storage_ready) {
         FURI_LOG_E(TAG, "Failed to initialize app data");
     }
@@ -1008,7 +1227,6 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     view_dispatcher_enable_queue(app->dispatcher);
     view_dispatcher_set_event_callback_context(app->dispatcher, app);
     view_dispatcher_set_navigation_event_callback(app->dispatcher, navigation_callback);
-    view_dispatcher_set_tick_event_callback(app->dispatcher, tick_callback, 1000);
     view_dispatcher_attach_to_gui(app->dispatcher, gui, ViewDispatcherTypeFullscreen);
 
     app->main_menu = submenu_alloc();
@@ -1059,17 +1277,18 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     view_allocate_model(app->notice_view, ViewModelTypeLockFree, 1);
     view_dispatcher_add_view(app->dispatcher, ViewNotice, app->notice_view);
 
-    app->exit_view = view_alloc();
-    view_set_context(app->exit_view, app);
-    view_set_draw_callback(app->exit_view, draw_exit_prompt);
-    view_set_input_callback(app->exit_view, exit_input);
-    view_allocate_model(app->exit_view, ViewModelTypeLockFree, 1);
-    view_dispatcher_add_view(app->dispatcher, ViewExitPrompt, app->exit_view);
+    app->tracker_view = view_alloc();
+    view_set_context(app->tracker_view, app);
+    view_set_draw_callback(app->tracker_view, draw_tracker);
+    view_set_input_callback(app->tracker_view, tracker_input);
+    view_allocate_model(app->tracker_view, ViewModelTypeLockFree, 1);
+    view_dispatcher_add_view(app->dispatcher, ViewTracker, app->tracker_view);
 
     furi_record_close(RECORD_GUI);
     return app;
 }
 
+// Releases every view, module, dispatcher, and firmware record acquired during allocation.
 static void maintenance_tracker_free(MaintenanceApp* app) {
     view_dispatcher_remove_view(app->dispatcher, ViewMain);
     view_dispatcher_remove_view(app->dispatcher, ViewEquipment);
@@ -1078,7 +1297,7 @@ static void maintenance_tracker_free(MaintenanceApp* app) {
     view_dispatcher_remove_view(app->dispatcher, ViewHistory);
     view_dispatcher_remove_view(app->dispatcher, ViewChecklist);
     view_dispatcher_remove_view(app->dispatcher, ViewNotice);
-    view_dispatcher_remove_view(app->dispatcher, ViewExitPrompt);
+    view_dispatcher_remove_view(app->dispatcher, ViewTracker);
     submenu_free(app->main_menu);
     submenu_free(app->profile_menu);
     text_input_free(app->text_input);
@@ -1086,12 +1305,13 @@ static void maintenance_tracker_free(MaintenanceApp* app) {
     view_free(app->equipment_view);
     view_free(app->checklist_view);
     view_free(app->notice_view);
-    view_free(app->exit_view);
+    view_free(app->tracker_view);
     view_dispatcher_free(app->dispatcher);
     furi_record_close(RECORD_STORAGE);
     free(app);
 }
 
+// Application entry point: initialize, run the view dispatcher, then release app resources.
 int32_t maintenance_tracker_app(void* context) {
     UNUSED(context);
     MaintenanceApp* app = maintenance_tracker_alloc();
