@@ -1069,10 +1069,6 @@ static void rebuild_profile_menu(MaintenanceApp* app) {
 static void main_menu_callback(void* context, uint32_t index) {
     MaintenanceApp* app = context;
     if(index == 0) {
-        if(!load_assets(app)) {
-            show_notice(app, "Could not load equipment", false);
-            return;
-        }
         app->selected_asset = app->asset_count ? 0 : -1;
         switch_view(app, ViewEquipment);
     } else if(index == 1) {
