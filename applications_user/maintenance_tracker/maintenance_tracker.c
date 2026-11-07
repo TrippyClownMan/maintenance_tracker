@@ -366,15 +366,17 @@ static void parse_asset_line(MaintenanceApp* app, char* line) {
     if((end == seconds_text) || (*end != '\0') || (seconds > UINT32_MAX)) return;
     if(strlen(name_text) >= ASSET_NAME_SIZE) return;
 
-    Asset* asset = &app->assets[app->asset_count++];
+    Asset* asset = &app->assets[app->asset_count];
     asset->id = (uint32_t)id;
     asset->lifetime_seconds = (uint32_t)seconds;
     snprintf(asset->last_service, sizeof(asset->last_service), "%s", date_text);
     snprintf(asset->name, sizeof(asset->name), "%s", name_text);
+    app->asset_count++;
 }
 
 // Loads asset records from SD, creating an empty database on first launch.
 static bool load_assets(MaintenanceApp* app) {
+    app->asset_count = 0;
     File* file = storage_file_alloc(app->storage);
     if(!storage_file_open(file, asset_db_path(), FSAM_READ, FSOM_OPEN_EXISTING)) {
         storage_file_free(file);
@@ -1067,6 +1069,10 @@ static void rebuild_profile_menu(MaintenanceApp* app) {
 static void main_menu_callback(void* context, uint32_t index) {
     MaintenanceApp* app = context;
     if(index == 0) {
+        if(!load_assets(app)) {
+            show_notice(app, "Could not load equipment", false);
+            return;
+        }
         app->selected_asset = app->asset_count ? 0 : -1;
         switch_view(app, ViewEquipment);
     } else if(index == 1) {
