@@ -341,36 +341,50 @@ static bool write_asset_database(MaintenanceApp* app) {
     return success;
 }
 
-// Parses one database row, ignoring malformed records and enforcing field limits.
+// Parses one database row, retaining available fields and defaulting missing ones.
 static void parse_asset_line(MaintenanceApp* app, char* line) {
     if(app->asset_count >= ASSET_LIMIT) return;
 
-    char* id_text = line;
-    char* seconds_text = strchr(id_text, '\t');
-    if(!seconds_text) return;
-    *seconds_text++ = '\0';
-
-    char* date_text = strchr(seconds_text, '\t');
-    if(!date_text) return;
-    *date_text++ = '\0';
-
-    char* name_text = strchr(date_text, '\t');
-    if(!name_text) return;
-    *name_text++ = '\0';
-    name_text[strcspn(name_text, "\r\n")] = '\0';
-
-    char* end = NULL;
-    unsigned long id = strtoul(id_text, &end, 10);
-    if((end == id_text) || (*end != '\0') || (id > UINT32_MAX)) return;
-    unsigned long seconds = strtoul(seconds_text, &end, 10);
-    if((end == seconds_text) || (*end != '\0') || (seconds > UINT32_MAX)) return;
-    if(strlen(name_text) >= ASSET_NAME_SIZE) return;
-
     Asset* asset = &app->assets[app->asset_count];
-    asset->id = (uint32_t)id;
-    asset->lifetime_seconds = (uint32_t)seconds;
-    snprintf(asset->last_service, sizeof(asset->last_service), "%s", date_text);
-    snprintf(asset->name, sizeof(asset->name), "%s", name_text);
+    asset->id = 0;
+    asset->lifetime_seconds = 0;
+    snprintf(asset->name, sizeof(asset->name), "%s", "Unnamed Asset");
+    snprintf(asset->last_service, sizeof(asset->last_service), "%s", "Never");
+
+    char* seconds_text = strchr(line, '\t');
+    if(seconds_text) {
+        *seconds_text++ = '\0';
+        char* end = NULL;
+        unsigned long id = strtoul(line, &end, 10);
+        if((end != line) && (*end == '\0') && (id <= UINT32_MAX)) {
+            asset->id = (uint32_t)id;
+        }
+
+        char* date_text = strchr(seconds_text, '\t');
+        if(date_text) *date_text++ = '\0';
+
+        unsigned long seconds = strtoul(seconds_text, &end, 10);
+        if((end != seconds_text) && (*end == '\0') && (seconds <= UINT32_MAX)) {
+            asset->lifetime_seconds = (uint32_t)seconds;
+        }
+
+        if(date_text) {
+            char* name_text = strchr(date_text, '\t');
+            if(name_text) *name_text++ = '\0';
+            date_text[strcspn(date_text, "\r\n")] = '\0';
+            if(date_text[0]) {
+                snprintf(asset->last_service, sizeof(asset->last_service), "%s", date_text);
+            }
+
+            if(name_text) {
+                name_text[strcspn(name_text, "\r\n")] = '\0';
+                if(name_text[0]) {
+                    snprintf(asset->name, sizeof(asset->name), "%s", name_text);
+                }
+            }
+        }
+    }
+
     app->asset_count++;
 }
 
@@ -390,22 +404,24 @@ static bool load_assets(MaintenanceApp* app) {
 
     char line[128];
     uint8_t line_length = 0;
+    bool line_overflow = false;
     char chunk[64];
     uint16_t count;
     while((count = storage_file_read(file, chunk, sizeof(chunk))) > 0) {
         for(uint16_t i = 0; i < count; i++) {
             if(chunk[i] == '\n') {
                 line[line_length] = '\0';
-                if(line_length) parse_asset_line(app, line);
+                if(line_length > 0 && !line_overflow) parse_asset_line(app, line);
                 line_length = 0;
-            } else if((line_length + 1U) < sizeof(line)) {
+                line_overflow = false;
+            } else if(line_length < (sizeof(line) - 1U)) {
                 line[line_length++] = chunk[i];
             } else {
-                line_length = 0;
+                line_overflow = true;
             }
         }
     }
-    if(line_length) {
+    if(line_length > 0 && !line_overflow) {
         line[line_length] = '\0';
         parse_asset_line(app, line);
     }
@@ -434,13 +450,14 @@ static void load_services(MaintenanceApp* app) {
 
     char line[SERVICE_NAME_SIZE];
     uint8_t line_length = 0;
+    bool line_overflow = false;
     char chunk[32];
     uint16_t count;
     while((count = storage_file_read(file, chunk, sizeof(chunk))) > 0) {
         for(uint16_t i = 0; i < count; i++) {
             if(chunk[i] == '\n') {
                 line[line_length] = '\0';
-                if(line_length && app->service_count < SERVICE_LIMIT) {
+                if(line_length > 0 && !line_overflow && app->service_count < SERVICE_LIMIT) {
                     line[strcspn(line, "\r")] = '\0';
                     if(line[0]) {
                         snprintf(
@@ -451,14 +468,15 @@ static void load_services(MaintenanceApp* app) {
                     }
                 }
                 line_length = 0;
-            } else if((line_length + 1U) < sizeof(line)) {
+                line_overflow = false;
+            } else if(line_length < (sizeof(line) - 1U)) {
                 line[line_length++] = chunk[i];
             } else {
-                line_length = 0;
+                line_overflow = true;
             }
         }
     }
-    if(line_length && app->service_count < SERVICE_LIMIT) {
+    if(line_length > 0 && !line_overflow && app->service_count < SERVICE_LIMIT) {
         line[line_length] = '\0';
         line[strcspn(line, "\r")] = '\0';
         if(line[0]) {
