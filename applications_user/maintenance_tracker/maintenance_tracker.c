@@ -343,25 +343,29 @@ static bool write_asset_database(MaintenanceApp* app) {
 
 // Parses one database row, retaining available fields and defaulting missing ones.
 static void parse_asset_line(MaintenanceApp* app, char* line) {
-    if(app->asset_count >= ASSET_LIMIT) return;
+    if((app->asset_count >= ASSET_LIMIT) || !line) return;
 
     Asset* asset = &app->assets[app->asset_count];
-    asset->id = 0;
-    asset->lifetime_seconds = 0;
+    // Reset the full record so absent or truncated TSV columns cannot reuse stale bytes.
+    memset(asset, 0, sizeof(*asset));
     snprintf(asset->name, sizeof(asset->name), "%s", "Unnamed Asset");
     snprintf(asset->last_service, sizeof(asset->last_service), "%s", "Never");
 
-    char* seconds_text = strchr(line, '\t');
-    if(seconds_text) {
-        *seconds_text++ = '\0';
-        char* end = NULL;
-        unsigned long id = strtoul(line, &end, 10);
-        if((end != line) && (*end == '\0') && (id <= UINT32_MAX)) {
-            asset->id = (uint32_t)id;
-        }
+    char* id_text = line;
+    char* seconds_text = strchr(id_text, '\t');
+    if(seconds_text) *seconds_text++ = '\0';
+    id_text[strcspn(id_text, "\r\n")] = '\0';
 
+    char* end = NULL;
+    unsigned long id = strtoul(id_text, &end, 10);
+    if((end != id_text) && (*end == '\0') && (id <= UINT32_MAX)) {
+        asset->id = (uint32_t)id;
+    }
+
+    if(seconds_text) {
         char* date_text = strchr(seconds_text, '\t');
         if(date_text) *date_text++ = '\0';
+        seconds_text[strcspn(seconds_text, "\r\n")] = '\0';
 
         unsigned long seconds = strtoul(seconds_text, &end, 10);
         if((end != seconds_text) && (*end == '\0') && (seconds <= UINT32_MAX)) {
@@ -385,6 +389,8 @@ static void parse_asset_line(MaintenanceApp* app, char* line) {
         }
     }
 
+    asset->name[sizeof(asset->name) - 1U] = '\0';
+    asset->last_service[sizeof(asset->last_service) - 1U] = '\0';
     app->asset_count++;
 }
 
@@ -433,11 +439,18 @@ static bool load_assets(MaintenanceApp* app) {
 
 // Resets the service list to defaults, then appends this asset's custom entries.
 static void load_services(MaintenanceApp* app) {
-    app->service_count = standard_service_count;
-    for(uint8_t i = 0; i < standard_service_count; i++) {
+    // Clear all slots before rebuilding the active checklist.
+    memset(app->services, 0, sizeof(app->services));
+    app->service_count = 0;
+    for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
         snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", standard_services[i]);
+        app->service_count++;
     }
-    if(app->selected_asset < 0) return;
+    if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
+       ((uint8_t)app->selected_asset >= app->asset_count)) {
+        app->selected_asset = -1;
+        return;
+    }
 
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char path[64];
@@ -470,6 +483,7 @@ static void load_services(MaintenanceApp* app) {
                         line);
                 }
                 line_length = 0;
+                line[0] = '\0';
                 line_overflow = false;
             } else if(line_length < (sizeof(line) - 1U)) {
                 line[line_length++] = chunk[i];
@@ -893,18 +907,24 @@ static void draw_equipment(Canvas* canvas, void* context) {
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 10, "Equipment");
+    if(app->asset_count > ASSET_LIMIT) app->asset_count = ASSET_LIMIT;
     if(app->asset_count == 0) {
+        app->selected_asset = -1;
         canvas_set_font(canvas, FontSecondary);
         canvas_draw_str(canvas, 4, 30, "No profiles saved");
         canvas_draw_str(canvas, 4, 43, "Back to add one");
         return;
     }
 
-    uint8_t first = app->selected_asset >= 2 ? (uint8_t)app->selected_asset - 1U : 0U;
+    if((app->selected_asset < 0) || ((uint8_t)app->selected_asset >= app->asset_count)) {
+        app->selected_asset = 0;
+    }
+    uint8_t selected_asset = (uint8_t)app->selected_asset;
+    uint8_t first = selected_asset >= 2 ? selected_asset - 1U : 0U;
     for(uint8_t row = 0; (row < 2) && ((first + row) < app->asset_count); row++) {
         uint8_t index = first + row;
         uint8_t y = 27 + row * 18;
-        if(index == (uint8_t)app->selected_asset) {
+        if(index == selected_asset) {
             canvas_set_color(canvas, ColorBlack);
             canvas_draw_box(canvas, 0, y - 8, 127, 17);
             canvas_set_color(canvas, ColorWhite);
@@ -912,9 +932,16 @@ static void draw_equipment(Canvas* canvas, void* context) {
             canvas_set_color(canvas, ColorBlack);
         }
         canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 3, y, app->assets[index].name);
+        char name[ASSET_NAME_SIZE] = {0};
+        char last_service[DATE_SIZE] = {0};
+        // Bound copies and force termination before passing fixed-size fields to the canvas.
+        memcpy(name, app->assets[index].name, sizeof(name));
+        memcpy(last_service, app->assets[index].last_service, sizeof(last_service));
+        name[sizeof(name) - 1U] = '\0';
+        last_service[sizeof(last_service) - 1U] = '\0';
+        canvas_draw_str(canvas, 3, y, name);
         char date[24];
-        snprintf(date, sizeof(date), "Last: %s", app->assets[index].last_service);
+        snprintf(date, sizeof(date), "Last: %s", last_service);
         canvas_draw_str(canvas, 3, y + 8, date);
         canvas_set_color(canvas, ColorBlack);
     }
@@ -1123,7 +1150,12 @@ static void text_input_callback(void* context) {
 
     if(app->input_kind == InputNewAsset) {
         if(add_asset(app, app->input_buffer)) {
-            app->selected_asset = (int8_t)(app->asset_count - 1U);
+            if((app->asset_count > 0) && (app->asset_count <= ASSET_LIMIT)) {
+                app->selected_asset = (int8_t)(app->asset_count - 1U);
+            } else {
+                app->selected_asset = -1;
+            }
+            memset(app->input_buffer, 0, sizeof(app->input_buffer));
             switch_view(app, ViewMain);
         } else {
             show_notice(app, "Could not save equipment", false);
@@ -1146,6 +1178,13 @@ static void text_input_callback(void* context) {
 // Handles profile actions: history, checklist, custom service, clock tracking, and NFC write.
 static void profile_menu_callback(void* context, uint32_t index) {
     MaintenanceApp* app = context;
+    if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
+       ((uint8_t)app->selected_asset >= app->asset_count)) {
+        app->selected_asset = -1;
+        app->service_count = 0;
+        show_notice(app, "No equipment selected", false);
+        return;
+    }
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     if(index == 0) {
         char path[64];
@@ -1173,6 +1212,7 @@ static void profile_menu_callback(void* context, uint32_t index) {
         switch_view(app, ViewHistory);
     } else if(index == 1) {
         memset(app->service_checked, 0, sizeof(app->service_checked));
+        memset(app->services, 0, sizeof(app->services));
         app->checklist_log_saved = false;
         app->checklist_selection = 0;
         app->service_count = 0;
