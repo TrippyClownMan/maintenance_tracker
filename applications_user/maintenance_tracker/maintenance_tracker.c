@@ -449,6 +449,7 @@ static void load_services(MaintenanceApp* app) {
     }
 
     char line[SERVICE_NAME_SIZE];
+    memset(line, 0, sizeof(line));
     uint8_t line_length = 0;
     bool line_overflow = false;
     char chunk[32];
@@ -457,15 +458,16 @@ static void load_services(MaintenanceApp* app) {
         for(uint16_t i = 0; i < count; i++) {
             if(chunk[i] == '\n') {
                 line[line_length] = '\0';
+                if(line_length > 0 && line[line_length - 1] == '\r') {
+                    line[line_length - 1] = '\0';
+                    line_length--;
+                }
                 if(line_length > 0 && !line_overflow && app->service_count < SERVICE_LIMIT) {
-                    line[strcspn(line, "\r")] = '\0';
-                    if(line[0]) {
-                        snprintf(
-                            app->services[app->service_count++],
-                            SERVICE_NAME_SIZE,
-                            "%s",
-                            line);
-                    }
+                    snprintf(
+                        app->services[app->service_count++],
+                        SERVICE_NAME_SIZE,
+                        "%s",
+                        line);
                 }
                 line_length = 0;
                 line_overflow = false;
@@ -478,8 +480,11 @@ static void load_services(MaintenanceApp* app) {
     }
     if(line_length > 0 && !line_overflow && app->service_count < SERVICE_LIMIT) {
         line[line_length] = '\0';
-        line[strcspn(line, "\r")] = '\0';
-        if(line[0]) {
+        if(line[line_length - 1] == '\r') {
+            line[line_length - 1] = '\0';
+            line_length--;
+        }
+        if(line_length > 0) {
             snprintf(app->services[app->service_count++], SERVICE_NAME_SIZE, "%s", line);
         }
     }
@@ -1170,6 +1175,7 @@ static void profile_menu_callback(void* context, uint32_t index) {
         memset(app->service_checked, 0, sizeof(app->service_checked));
         app->checklist_log_saved = false;
         app->checklist_selection = 0;
+        app->service_count = 0;
         load_services(app);
         view_commit_model(app->checklist_view, true);
         switch_view(app, ViewChecklist);
