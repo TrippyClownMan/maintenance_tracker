@@ -986,25 +986,31 @@ static void draw_notice(Canvas* canvas, void* context) {
 static bool equipment_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     if(event->type != InputTypeShort) return false;
+
     if(event->key == InputKeyUp) {
         if(app->selected_asset > 0) app->selected_asset--;
         view_commit_model(app->equipment_view, true);
         return true;
     }
     if(event->key == InputKeyDown) {
-        if((app->asset_count > 0) && ((uint8_t)(app->selected_asset + 1) < app->asset_count)) {
+        if(app->asset_count > 0 && (uint8_t)(app->selected_asset + 1) < app->asset_count) {
             app->selected_asset++;
         }
         view_commit_model(app->equipment_view, true);
         return true;
     }
     if(event->key == InputKeyOk) {
-        if((app->asset_count > 0) && (app->selected_asset >= 0)) {
+        if(app->asset_count > 0 && app->selected_asset >= 0) {
             load_services(app);
             rebuild_profile_menu(app);
             switch_view(app, ViewProfile);
         }
         return true;
+    }
+    if(event->key == InputKeyBack) {
+        // Force reload when leaving/re-entering
+        load_assets(app);
+        view_commit_model(app->equipment_view, true);
     }
     return false;
 }
@@ -1101,8 +1107,11 @@ static void rebuild_profile_menu(MaintenanceApp* app) {
 static void main_menu_callback(void* context, uint32_t index) {
     MaintenanceApp* app = context;
     if(index == 0) {
-        app->selected_asset = app->asset_count ? 0 : -1;
-        switch_view(app, ViewEquipment);
+      load_assets(app); // ← add this line
+      app->selected_asset = app->asset_count ? 0 : -1;
+      view_commit_model(app->equipment_view, true);
+      switch_view(app, ViewEquipment);
+}
     } else if(index == 1) {
         app->input_kind = InputNewAsset;
         memset(app->input_buffer, 0, sizeof(app->input_buffer));
