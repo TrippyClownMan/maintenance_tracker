@@ -1106,11 +1106,13 @@ static void rebuild_profile_menu(MaintenanceApp* app) {
 // Routes main-menu selections to equipment browsing or new-asset input.
 static void main_menu_callback(void* context, uint32_t index) {
     MaintenanceApp* app = context;
-    if(index == 0) {
-      load_assets(app); // ← add this line
-      app->selected_asset = app->asset_count ? 0 : -1;
-      view_commit_model(app->equipment_view, true);
-      switch_view(app, ViewEquipment);
+        if(index == 0) {
+           load_assets(app); // force reload
+            app->selected_asset = (app->asset_count > 0) ? 0 : -1;
+            if(app->equipment_view) {
+                view_commit_model(app->equipment_view, true);
+            }
+            switch_view(app, ViewEquipment);
     }
      else if(index == 1) {
         app->input_kind = InputNewAsset;
@@ -1199,12 +1201,22 @@ static void profile_menu_callback(void* context, uint32_t index) {
         text_box_set_focus(app->text_box, TextBoxFocusEnd);
         switch_view(app, ViewHistory);
    } else if(index == 1) {
-        app->checklist_log_saved = false;
-        app->checklist_selection = 0;
-        load_services(app); // now fully safe
-        if(app->checklist_view) {
-            view_commit_model(app->checklist_view, true);
+    app->checklist_log_saved = false;
+    app->checklist_selection = 0;
+    load_services(app); // already there
+    if(app->service_count == 0) { // safety
+        // force the standard ones again
+        for(uint8_t i = 0; i < standard_service_count && i < SERVICE_LIMIT; i++) {
+            strncpy(app->services[i], standard_services[i], SERVICE_NAME_SIZE - 1);
+            app->services[i][SERVICE_NAME_SIZE - 1] = '\0';
         }
+        app->service_count = standard_service_count;
+    }
+    if(app->checklist_view) {
+        view_commit_model(app->checklist_view, true);
+    }
+    switch_view(app, ViewChecklist);
+}
         switch_view(app, ViewChecklist);
     } else if(index == 2) {
         app->input_kind = InputNewService;
