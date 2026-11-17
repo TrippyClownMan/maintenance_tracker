@@ -319,7 +319,7 @@ static bool write_asset_database(MaintenanceApp* app) {    File* file = storage_
 
             char line[128];
             int len = snprintf(line, sizeof(line),
-                "%lu\t%lu\t%s\t%s\n",
+                "%lu|%lu|%s|%s\n",
                 (unsigned long)asset->id,
                 (unsigned long)asset->lifetime_seconds,
                 asset->last_service[0] ? asset->last_service : "Never",
@@ -360,10 +360,10 @@ static void parse_asset_line(MaintenanceApp* app, char* line) {      if(app->ass
       field_count = 1;
 
       while(*p && field_count < 4) {
-            if(*p == '\t') {
-                  *p = '\0'; // terminate previous field
-                  fields[field_count] = p + 1;
-                  field_count++;
+            if(*p == '|') {
+                 *p = '\0';
+                 fields[field_count] = p + 1;
+                 field_count++;
             }
             p++;
       }
