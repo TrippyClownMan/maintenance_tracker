@@ -1139,13 +1139,11 @@ static void main_menu_callback(void* context, uint32_t index) {
         text_input_set_result_callback(
             app->text_input,
             text_input_callback,
-          if(add_asset(app, app->input_buffer)) {
-            app->selected_asset = (int8_t)(app->asset_count - 1);
-            if(app->equipment_view) {
-                view_commit_model(app->equipment_view, true);
-            }
-            switch_view(app, ViewMain);
-}
+            app,
+            app->input_buffer,
+            sizeof(app->input_buffer),
+            true);
+        switch_view(app, ViewInput);
     }
 }
 
@@ -1224,10 +1222,9 @@ static void profile_menu_callback(void* context, uint32_t index) {
         app->checklist_selection = 0;
         load_services(app); // now fully safe
         if(app->checklist_view) {
-                view_commit_model(app->checklist_view, true);
+            view_commit_model(app->checklist_view, true);
         }
         switch_view(app, ViewChecklist);
-        }
     } else if(index == 2) {
         app->input_kind = InputNewService;
         memset(app->input_buffer, 0, sizeof(app->input_buffer));
