@@ -302,32 +302,39 @@ static bool append_tracker_event(
 }
 
 // Rewrites all asset records to the tab-separated SD-card database.
-static bool write_asset_database(MaintenanceApp* app) {
-    File* file = storage_file_alloc(app->storage);
+static bool write_asset_database(MaintenanceApp* app) {    File* file = storage_file_alloc(app->storage);
+    if(!file) return false;
+
     bool success = false;
+
     if(storage_file_open(file, asset_db_path(), FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
         success = true;
+
         for(uint8_t i = 0; i < app->asset_count; i++) {
             Asset* asset = &app->assets[i];
+
+            // Make sure strings are safe
+            asset->name[sizeof(asset->name) - 1] = '\0';
+            asset->last_service[sizeof(asset->last_service) - 1] = '\0';
+
             char line[128];
-            int length = snprintf(
-                line,
-                sizeof(line),
+            int len = snprintf(line, sizeof(line),
                 "%lu\t%lu\t%s\t%s\n",
                 (unsigned long)asset->id,
                 (unsigned long)asset->lifetime_seconds,
-                asset->last_service,
-                asset->name);
-            if((length < 0) || ((size_t)length >= sizeof(line)) ||
-               (storage_file_write(file, line, (uint16_t)length) != (uint16_t)length)) {
+                asset->last_service[0] ? asset->last_service : "Never",
+                asset->name[0] ? asset->name : "Unnamed");
+
+            if(len <= 0 || (size_t)len >= sizeof(line) ||
+               storage_file_write(file, line, (uint16_t)len) != (uint16_t)len) {
                 success = false;
                 break;
             }
         }
+
         if(!storage_file_close(file)) success = false;
-    } else {
-        FURI_LOG_E(TAG, "Cannot open asset database for writing");
     }
+
     storage_file_free(file);
     return success;
 }
