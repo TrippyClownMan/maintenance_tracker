@@ -340,70 +340,65 @@ static bool write_asset_database(MaintenanceApp* app) {    File* file = storage_
 }
 
 // Parses one database row, retaining available fields and defaulting missing ones.
-static void parse_asset_line(MaintenanceApp* app, char* line) {
-    if(app->asset_count >= ASSET_LIMIT || line == NULL) return;
+static void parse_asset_line(MaintenanceApp* app, char* line) {      if(app->asset_count >= ASSET_LIMIT || line == NULL) return;
 
-    Asset* asset = &app->assets[app->asset_count];
-    memset(asset, 0, sizeof(Asset)); // wipe everything
+      Asset* asset = &app->assets[app->asset_count];
+      memset(asset, 0, sizeof(Asset));
 
-    // Safe defaults
-    asset->id = 0;
-    asset->lifetime_seconds = 0;
-    strncpy(asset->name, "Unnamed Asset", sizeof(asset->name) - 1);
-    strncpy(asset->last_service, "Never", sizeof(asset->last_service) - 1);
+      // Defaults
+      asset->id = 0;
+      asset->lifetime_seconds = 0;
+      strncpy(asset->name, "Unnamed", sizeof(asset->name) - 1);
+      strncpy(asset->last_service, "Never", sizeof(asset->last_service) - 1);
 
-    // Very defensive parsing
-    char* p = line;
-    char* fields[4] = {0};
-    int field = 0;
+      // Manual split by tab (more reliable)
+      char* fields[4] = {0};
+      int field_count = 0;
+      char* p = line;
 
-    fields[0] = p;
-    while(*p && field < 3) {
-        if(*p == '\t') {
-            *p = '\0';
-            fields[++field] = p + 1;
-        }
-        p++;
-    }
+      fields[0] = p;
+      field_count = 1;
 
-    // id
-    if(fields[0] && fields[0][0]) {
-        char* end = NULL;
-        unsigned long id = strtoul(fields[0], &end, 10);
-        if(end != fields[0] && id <= UINT32_MAX) {
-            asset->id = (uint32_t)id;
-        }
-    }
+      while(*p && field_count < 4) {
+            if(*p == '\t') {
+                  *p = '\0'; // terminate previous field
+                  fields[field_count] = p + 1;
+                  field_count++;
+            }
+            p++;
+      }
 
-    // lifetime_seconds
-    if(fields[1] && fields[1][0]) {
-        char* end = NULL;
-        unsigned long secs = strtoul(fields[1], &end, 10);
-        if(end != fields[1] && secs <= UINT32_MAX) {
-            asset->lifetime_seconds = (uint32_t)secs;
-        }
-    }
+      // Remove any trailing \r or \n from the last field
+      if(field_count > 0 && fields[field_count-1]) {
+            fields[field_count-1][strcspn(fields[field_count-1], "\r\n")] = '\0';
+      }
 
-    // last_service
-    if(fields[2] && fields[2][0]) {
-        // strip CR/LF
-        fields[2][strcspn(fields[2], "\r\n")] = '\0';
-        strncpy(asset->last_service, fields[2], sizeof(asset->last_service) - 1);
-    }
+      // id
+      if(fields[0] && fields[0][0]) {
+            asset->id = (uint32_t)strtoul(fields[0], NULL, 10);
+      }
 
-    // name
-    if(fields[3] && fields[3][0]) {
-        fields[3][strcspn(fields[3], "\r\n")] = '\0';
-        strncpy(asset->name, fields[3], sizeof(asset->name) - 1);
-    }
+      // lifetime_seconds
+      if(fields[1] && fields[1][0]) {
+            asset->lifetime_seconds = (uint32_t)strtoul(fields[1], NULL, 10);
+      }
 
-    // Force null terminators
-    asset->name[sizeof(asset->name) - 1] = '\0';
-    asset->last_service[sizeof(asset->last_service) - 1] = '\0';
+      // last_service
+      if(fields[2] && fields[2][0]) {
+            strncpy(asset->last_service, fields[2], sizeof(asset->last_service) - 1);
+      }
 
-    app->asset_count++;
+      // name
+      if(fields[3] && fields[3][0]) {
+            strncpy(asset->name, fields[3], sizeof(asset->name) - 1);
+      }
+
+      // Force null terminators
+      asset->name[sizeof(asset->name) - 1] = '\0';
+      asset->last_service[sizeof(asset->last_service) - 1] = '\0';
+
+      app->asset_count++;
 }
-
 // Loads asset records from SD, creating an empty database on first launch.
 static bool load_assets(MaintenanceApp* app) {
     app->asset_count = 0;
