@@ -116,6 +116,8 @@ static void profile_menu_callback(void* context, uint32_t index);
 static void rebuild_profile_menu(MaintenanceApp* app);
 static void show_notice(MaintenanceApp* app, const char* message, bool exits);
 static bool tracker_input(InputEvent* event, void* context);
+static bool append_service_log(MaintenanceApp* app);
+static bool append_custom_service(MaintenanceApp* app, const char* service);
 
 // Returns the shared SD-card path for the asset database.
 static const char* asset_db_path(void) {
@@ -1206,7 +1208,7 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
 
     Gui* gui = furi_record_open(RECORD_GUI);
     app->dispatcher = view_dispatcher_alloc();
-    view_dispatcher_enable_queue(app->dispatcher);
+    //view_dispatcher_enable_queue(app->dispatcher);
     view_dispatcher_set_event_callback_context(app->dispatcher, app);
     view_dispatcher_set_navigation_event_callback(app->dispatcher, navigation_callback);
     view_dispatcher_attach_to_gui(app->dispatcher, gui, ViewDispatcherTypeFullscreen);
