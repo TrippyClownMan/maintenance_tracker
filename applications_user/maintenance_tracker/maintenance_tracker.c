@@ -484,6 +484,65 @@ static void load_services(MaintenanceApp* app) {
     storage_file_close(file);
     storage_file_free(file);
 }
+// Appends a user-defined service name to the selected asset's service file.
+static bool append_custom_service(MaintenanceApp* app, const char* service) {
+    if(app->selected_asset < 0 || (uint8_t)app->selected_asset >= app->asset_count) return false;
+
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    char path[64];
+    asset_services_path(asset, path, sizeof(path));
+
+    File* file = storage_file_alloc(app->storage);
+    if(!file) return false;
+
+    bool success = false;
+    if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        size_t length = strlen(service);
+        success = (storage_file_write(file, service, (uint16_t)length) == length) &&
+                  (storage_file_write(file, "\n", 1) == 1);
+        if(!storage_file_close(file)) success = false;
+    }
+    storage_file_free(file);
+    return success;
+}
+// Appends the selected maintenance items and uptime timestamp to the asset log.
+static bool append_service_log(MaintenanceApp* app) {
+    if(app->selected_asset < 0 || (uint8_t)app->selected_asset >= app->asset_count) return false;
+
+    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    char path[64];
+    asset_log_path(asset, path, sizeof(path));
+
+    File* file = storage_file_alloc(app->storage);
+    if(!file) return false;
+
+    bool success = false;
+    if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        char line[256];
+        int length = snprintf(line, sizeof(line), "T+%lu s ",
+            (unsigned long)(furi_get_tick() / furi_kernel_get_tick_frequency()));
+
+        for(uint8_t i = 0; i < app->service_count && length > 0 && (size_t)length < sizeof(line) - 2; i++) {
+            if(app->service_checked[i]) {
+                int added = snprintf(line + length, sizeof(line) - (size_t)length,
+                    "%s%s", (length > 22) ? ", " : "", app->services[i]);
+                if(added < 0) {
+                    length = -1;
+                    break;
+                }
+                length += added;
+            }
+        }
+
+        if(length > 0) {
+            if((size_t)length < sizeof(line) - 1) line[length++] = '\n';
+            success = storage_file_write(file, line, (uint16_t)length) == (uint16_t)length;
+        }
+        if(!storage_file_close(file)) success = false;
+    }
+    storage_file_free(file);
+    return success;
+}
 // Adds a uniquely numbered asset and persists it, rolling back if saving fails.
 static bool add_asset(MaintenanceApp* app, const char* name) {
     if(app->asset_count >= ASSET_LIMIT || !name || name[0] == '\0') return false;
