@@ -341,44 +341,42 @@ static bool write_asset_database(MaintenanceApp* app) {
 
 // Parses one database row, retaining available fields and defaulting missing ones.
 static void parse_asset_line(MaintenanceApp* app, char* line) {
-    if(app->asset_count >= ASSET_LIMIT || !line) return;
+    if(app->asset_count >= ASSET_LIMIT || !line || line[0] == '\0') return;
 
     Asset* asset = &app->assets[app->asset_count];
     memset(asset, 0, sizeof(Asset));
 
-    // Safe defaults
-    asset->id = 0;
+    // Defaults
+    asset->id = app->asset_count + 1;
     asset->lifetime_seconds = 0;
     strncpy(asset->name, "Unnamed", sizeof(asset->name) - 1);
     strncpy(asset->last_service, "Never", sizeof(asset->last_service) - 1);
 
-    char* fields[4] = {0};
-    int count = 0;
-    char* p = line;
+    // Very simple split
+    char* id_str = line;
+    char* life_str = strchr(line, '|');
+    if(!life_str) { app->asset_count++; return; }
+    *life_str++ = '\0';
 
-    fields[0] = p;
-    count = 1;
+    char* last_str = strchr(life_str, '|');
+    if(!last_str) { app->asset_count++; return; }
+    *last_str++ = '\0';
 
-    while(*p && count < 4) {
-        if(*p == '|') {
-            *p = '\0';
-            fields[count++] = p + 1;
-        }
-        p++;
-    }
+    char* name_str = strchr(last_str, '|');
+    if(!name_str) { app->asset_count++; return; }
+    *name_str++ = '\0';
 
-    // Clean last field
-    if(count > 0 && fields[count - 1]) {
-        fields[count - 1][strcspn(fields[count - 1], "\r\n")] = '\0';
-    }
+    // Clean
+    name_str[strcspn(name_str, "\r\n")] = '\0';
+    last_str[strcspn(last_str, "\r\n")] = '\0';
 
-    if(fields[0] && fields[0][0]) asset->id = (uint32_t)strtoul(fields[0], NULL, 10);
-    if(fields[1] && fields[1][0]) asset->lifetime_seconds = (uint32_t)strtoul(fields[1], NULL, 10);
-    if(fields[2] && fields[2][0]) strncpy(asset->last_service, fields[2], sizeof(asset->last_service) - 1);
-    if(fields[3] && fields[3][0]) strncpy(asset->name, fields[3], sizeof(asset->name) - 1);
+    if(id_str[0]) asset->id = (uint32_t)strtoul(id_str, NULL, 10);
+    if(life_str[0]) asset->lifetime_seconds = (uint32_t)strtoul(life_str, NULL, 10);
+    if(last_str[0]) strncpy(asset->last_service, last_str, sizeof(asset->last_service) - 1);
+    if(name_str[0]) strncpy(asset->name, name_str, sizeof(asset->name) - 1);
 
-    asset->name[sizeof(asset->name) - 1] = '\0';
-    asset->last_service[sizeof(asset->last_service) - 1] = '\0';
+    asset->name[sizeof(asset->name)-1] = '\0';
+    asset->last_service[sizeof(asset->last_service)-1] = '\0';
 
     app->asset_count++;
 }
