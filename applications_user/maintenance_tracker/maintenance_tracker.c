@@ -1200,22 +1200,22 @@ static void profile_menu_callback(void* context, uint32_t index) {
         text_box_set_text(app->text_box, app->history);
         text_box_set_focus(app->text_box, TextBoxFocusEnd);
         switch_view(app, ViewHistory);
-   } else if(index == 1) {
-    app->checklist_log_saved = false;
-    app->checklist_selection = 0;
-    load_services(app); // already there
-    if(app->service_count == 0) { // safety
+    } else if(index == 1) {
+        app->checklist_log_saved = false;
+        app->checklist_selection = 0;
+        load_services(app); // already there
+         if(app->service_count == 0) { // safety
         // force the standard ones again
-        for(uint8_t i = 0; i < standard_service_count && i < SERVICE_LIMIT; i++) {
-            strncpy(app->services[i], standard_services[i], SERVICE_NAME_SIZE - 1);
-            app->services[i][SERVICE_NAME_SIZE - 1] = '\0';
+            for(uint8_t i = 0; i < standard_service_count && i < SERVICE_LIMIT; i++) {
+                strncpy(app->services[i], standard_services[i], SERVICE_NAME_SIZE - 1);
+                app->services[i][SERVICE_NAME_SIZE - 1] = '\0';
+            }
+            app->service_count = standard_service_count;
         }
-        app->service_count = standard_service_count;
-    }
-    if(app->checklist_view) {
-        view_commit_model(app->checklist_view, true);
-    }
-    switch_view(app, ViewChecklist);
+        if(app->checklist_view) {
+            view_commit_model(app->checklist_view, true);
+        }
+        switch_view(app, ViewChecklist);
 }
         switch_view(app, ViewChecklist);
     } else if(index == 2) {
