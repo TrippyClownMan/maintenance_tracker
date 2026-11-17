@@ -302,7 +302,8 @@ static bool append_tracker_event(
 }
 
 // Rewrites all asset records to the tab-separated SD-card database.
-static bool write_asset_database(MaintenanceApp* app) {    File* file = storage_file_alloc(app->storage);
+static bool write_asset_database(MaintenanceApp* app) {
+    File* file = storage_file_alloc(app->storage);
     if(!file) return false;
 
     bool success = false;
@@ -311,19 +312,17 @@ static bool write_asset_database(MaintenanceApp* app) {    File* file = storage_
         success = true;
 
         for(uint8_t i = 0; i < app->asset_count; i++) {
-            Asset* asset = &app->assets[i];
-
-            // Make sure strings are safe
-            asset->name[sizeof(asset->name) - 1] = '\0';
-            asset->last_service[sizeof(asset->last_service) - 1] = '\0';
+            Asset* a = &app->assets[i];
+            a->name[sizeof(a->name) - 1] = '\0';
+            a->last_service[sizeof(a->last_service) - 1] = '\0';
 
             char line[128];
             int len = snprintf(line, sizeof(line),
                 "%lu|%lu|%s|%s\n",
-                (unsigned long)asset->id,
-                (unsigned long)asset->lifetime_seconds,
-                asset->last_service[0] ? asset->last_service : "Never",
-                asset->name[0] ? asset->name : "Unnamed");
+                (unsigned long)a->id,
+                (unsigned long)a->lifetime_seconds,
+                a->last_service[0] ? a->last_service : "Never",
+                a->name[0] ? a->name : "Unnamed");
 
             if(len <= 0 || (size_t)len >= sizeof(line) ||
                storage_file_write(file, line, (uint16_t)len) != (uint16_t)len) {
@@ -331,7 +330,6 @@ static bool write_asset_database(MaintenanceApp* app) {    File* file = storage_
                 break;
             }
         }
-
         if(!storage_file_close(file)) success = false;
     }
 
@@ -340,64 +338,47 @@ static bool write_asset_database(MaintenanceApp* app) {    File* file = storage_
 }
 
 // Parses one database row, retaining available fields and defaulting missing ones.
-static void parse_asset_line(MaintenanceApp* app, char* line) {      if(app->asset_count >= ASSET_LIMIT || line == NULL) return;
+static void parse_asset_line(MaintenanceApp* app, char* line) {
+    if(app->asset_count >= ASSET_LIMIT || !line) return;
 
-      Asset* asset = &app->assets[app->asset_count];
-      memset(asset, 0, sizeof(Asset));
+    Asset* asset = &app->assets[app->asset_count];
+    memset(asset, 0, sizeof(Asset));
 
-      // Defaults
-      asset->id = 0;
-      asset->lifetime_seconds = 0;
-      strncpy(asset->name, "Unnamed", sizeof(asset->name) - 1);
-      strncpy(asset->last_service, "Never", sizeof(asset->last_service) - 1);
+    // Safe defaults
+    asset->id = 0;
+    asset->lifetime_seconds = 0;
+    strncpy(asset->name, "Unnamed", sizeof(asset->name) - 1);
+    strncpy(asset->last_service, "Never", sizeof(asset->last_service) - 1);
 
-      // Manual split by tab (more reliable)
-      char* fields[4] = {0};
-      int field_count = 0;
-      char* p = line;
+    char* fields[4] = {0};
+    int count = 0;
+    char* p = line;
 
-      fields[0] = p;
-      field_count = 1;
+    fields[0] = p;
+    count = 1;
 
-      while(*p && field_count < 4) {
-            if(*p == '|') {
-                 *p = '\0';
-                 fields[field_count] = p + 1;
-                 field_count++;
-            }
-            p++;
-      }
+    while(*p && count < 4) {
+        if(*p == '|') {
+            *p = '\0';
+            fields[count++] = p + 1;
+        }
+        p++;
+    }
 
-      // Remove any trailing \r or \n from the last field
-      if(field_count > 0 && fields[field_count-1]) {
-            fields[field_count-1][strcspn(fields[field_count-1], "\r\n")] = '\0';
-      }
+    // Clean last field
+    if(count > 0 && fields[count - 1]) {
+        fields[count - 1][strcspn(fields[count - 1], "\r\n")] = '\0';
+    }
 
-      // id
-      if(fields[0] && fields[0][0]) {
-            asset->id = (uint32_t)strtoul(fields[0], NULL, 10);
-      }
+    if(fields[0] && fields[0][0]) asset->id = (uint32_t)strtoul(fields[0], NULL, 10);
+    if(fields[1] && fields[1][0]) asset->lifetime_seconds = (uint32_t)strtoul(fields[1], NULL, 10);
+    if(fields[2] && fields[2][0]) strncpy(asset->last_service, fields[2], sizeof(asset->last_service) - 1);
+    if(fields[3] && fields[3][0]) strncpy(asset->name, fields[3], sizeof(asset->name) - 1);
 
-      // lifetime_seconds
-      if(fields[1] && fields[1][0]) {
-            asset->lifetime_seconds = (uint32_t)strtoul(fields[1], NULL, 10);
-      }
+    asset->name[sizeof(asset->name) - 1] = '\0';
+    asset->last_service[sizeof(asset->last_service) - 1] = '\0';
 
-      // last_service
-      if(fields[2] && fields[2][0]) {
-            strncpy(asset->last_service, fields[2], sizeof(asset->last_service) - 1);
-      }
-
-      // name
-      if(fields[3] && fields[3][0]) {
-            strncpy(asset->name, fields[3], sizeof(asset->name) - 1);
-      }
-
-      // Force null terminators
-      asset->name[sizeof(asset->name) - 1] = '\0';
-      asset->last_service[sizeof(asset->last_service) - 1] = '\0';
-
-      app->asset_count++;
+    app->asset_count++;
 }
 // Loads asset records from SD, creating an empty database on first launch.
 static bool load_assets(MaintenanceApp* app) {
@@ -444,21 +425,17 @@ static bool load_assets(MaintenanceApp* app) {
 
 // Resets the service list to defaults, then appends this asset's custom entries.
 static void load_services(MaintenanceApp* app) {
-    // Completely wipe the service list every time
     memset(app->services, 0, sizeof(app->services));
     memset(app->service_checked, 0, sizeof(app->service_checked));
     app->service_count = 0;
 
-    // Add the standard ones first
     for(uint8_t i = 0; i < standard_service_count && i < SERVICE_LIMIT; i++) {
         strncpy(app->services[i], standard_services[i], SERVICE_NAME_SIZE - 1);
         app->services[i][SERVICE_NAME_SIZE - 1] = '\0';
         app->service_count++;
     }
 
-    if(app->selected_asset < 0 || (uint8_t)app->selected_asset >= app->asset_count) {
-        return; // no asset selected → only standard services
-    }
+    if(app->selected_asset < 0 || (uint8_t)app->selected_asset >= app->asset_count) return;
 
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char path[64];
@@ -472,9 +449,8 @@ static void load_services(MaintenanceApp* app) {
         return;
     }
 
-    char line[SERVICE_NAME_SIZE];
-    memset(line, 0, sizeof(line));
-    size_t line_len = 0;
+    char line[SERVICE_NAME_SIZE] = {0};
+    size_t len = 0;
     char chunk[32];
     uint16_t bytes;
 
@@ -482,23 +458,22 @@ static void load_services(MaintenanceApp* app) {
         for(uint16_t i = 0; i < bytes; i++) {
             char c = chunk[i];
             if(c == '\n' || c == '\r') {
-                if(line_len > 0 && app->service_count < SERVICE_LIMIT) {
-                    line[line_len] = '\0';
+                if(len > 0 && app->service_count < SERVICE_LIMIT) {
+                    line[len] = '\0';
                     strncpy(app->services[app->service_count], line, SERVICE_NAME_SIZE - 1);
                     app->services[app->service_count][SERVICE_NAME_SIZE - 1] = '\0';
                     app->service_count++;
                 }
-                line_len = 0;
+                len = 0;
                 memset(line, 0, sizeof(line));
-            } else if(line_len < SERVICE_NAME_SIZE - 1) {
-                line[line_len++] = c;
+            } else if(len < SERVICE_NAME_SIZE - 1) {
+                line[len++] = c;
             }
         }
     }
 
-    // last line without newline
-    if(line_len > 0 && app->service_count < SERVICE_LIMIT) {
-        line[line_len] = '\0';
+    if(len > 0 && app->service_count < SERVICE_LIMIT) {
+        line[len] = '\0';
         strncpy(app->services[app->service_count], line, SERVICE_NAME_SIZE - 1);
         app->services[app->service_count][SERVICE_NAME_SIZE - 1] = '\0';
         app->service_count++;
@@ -507,84 +482,28 @@ static void load_services(MaintenanceApp* app) {
     storage_file_close(file);
     storage_file_free(file);
 }
-
-// Appends a user-defined service name to the selected asset's service file.
-static bool append_custom_service(MaintenanceApp* app, const char* service) {
-    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    char path[64];
-    asset_services_path(asset, path, sizeof(path));
-    File* file = storage_file_alloc(app->storage);
-    bool success = false;
-    if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
-        size_t length = strlen(service);
-        success = (storage_file_write(file, service, (uint16_t)length) == length) &&
-                  (storage_file_write(file, "\n", 1) == 1);
-        if(!storage_file_close(file)) success = false;
-    } else {
-        FURI_LOG_E(TAG, "Cannot open custom service file");
-    }
-    storage_file_free(file);
-    return success;
-}
-
-// Appends the selected maintenance items and uptime timestamp to the asset log.
-static bool append_service_log(MaintenanceApp* app) {
-    Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    char path[64];
-    asset_log_path(asset, path, sizeof(path));
-    File* file = storage_file_alloc(app->storage);
-    bool success = false;
-    if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
-        char line[256];
-        int length = snprintf(
-            line,
-            sizeof(line),
-            "T+%lu s  ",
-            (unsigned long)(furi_get_tick() / furi_kernel_get_tick_frequency()));
-        for(uint8_t i = 0;
-            (i < app->service_count) && (length > 0) && ((size_t)length < sizeof(line) - 2);
-            i++) {
-            if(app->service_checked[i]) {
-                int added = snprintf(
-                    line + length,
-                    sizeof(line) - (size_t)length,
-                    "%s%s",
-                    (length > 22) ? ", " : "",
-                    app->services[i]);
-                if(added < 0) {
-                    length = -1;
-                    break;
-                }
-                length += added;
-            }
-        }
-        if(length > 0) {
-            if((size_t)length < sizeof(line) - 1) line[length++] = '\n';
-            success = storage_file_write(file, line, (uint16_t)length) == (uint16_t)length;
-        }
-        if(!storage_file_close(file)) success = false;
-    } else {
-        FURI_LOG_E(TAG, "Cannot open service log");
-    }
-    storage_file_free(file);
-    return success;
-}
-
 // Adds a uniquely numbered asset and persists it, rolling back if saving fails.
 static bool add_asset(MaintenanceApp* app, const char* name) {
-    if(app->asset_count >= ASSET_LIMIT) return false;
+    if(app->asset_count >= ASSET_LIMIT || !name || name[0] == '\0') return false;
+
     Asset* asset = &app->assets[app->asset_count];
-    memset(asset, 0, sizeof(*asset));
+    memset(asset, 0, sizeof(Asset));
+
     uint32_t next_id = 1;
     for(uint8_t i = 0; i < app->asset_count; i++) {
         if(app->assets[i].id >= next_id) next_id = app->assets[i].id + 1;
     }
+
     asset->id = next_id;
-    snprintf(asset->name, sizeof(asset->name), "%s", name);
-    snprintf(asset->last_service, sizeof(asset->last_service), "Never");
+    strncpy(asset->name, name, sizeof(asset->name) - 1);
+    asset->name[sizeof(asset->name) - 1] = '\0';
+    strncpy(asset->last_service, "Never", sizeof(asset->last_service) - 1);
+
     app->asset_count++;
+
     if(!write_asset_database(app)) {
         app->asset_count--;
+        memset(asset, 0, sizeof(Asset));
         return false;
     }
     return true;
@@ -898,43 +817,35 @@ static bool tracker_input(InputEvent* event, void* context) {
 
 // Draws the scrollable equipment selector and the selected asset's last-service date.
 static void draw_equipment(Canvas* canvas, void* context) {
-    if(!canvas || !context) return; // hard safety
+    if(!canvas || !context) return;
 
     MaintenanceApp* app = context;
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 10, "Equipment");
 
-    // Keep selected_asset always valid
     if(app->asset_count == 0) {
         app->selected_asset = -1;
-    } else {
-        if(app->selected_asset < 0) app->selected_asset = 0;
-        if((uint8_t)app->selected_asset >= app->asset_count) {
-            app->selected_asset = app->asset_count - 1;
-        }
-    }
-
-    if(app->asset_count == 0) {
         canvas_set_font(canvas, FontSecondary);
         canvas_draw_str(canvas, 4, 30, "No profiles saved");
         canvas_draw_str(canvas, 4, 43, "Back to add one");
         return;
     }
 
-    uint8_t first = 0;
-    if(app->selected_asset >= 2) {
-        first = (uint8_t)app->selected_asset - 1;
-    }
+    if(app->selected_asset < 0) app->selected_asset = 0;
+    if((uint8_t)app->selected_asset >= app->asset_count)
+        app->selected_asset = app->asset_count - 1;
+
+    uint8_t first = (app->selected_asset >= 2) ? (uint8_t)app->selected_asset - 1 : 0;
 
     for(uint8_t row = 0; row < 2; row++) {
-        uint8_t index = first + row;
-        if(index >= app->asset_count) break;
+        uint8_t idx = first + row;
+        if(idx >= app->asset_count) break;
 
         uint8_t y = 27 + row * 18;
-        bool selected = (index == (uint8_t)app->selected_asset);
+        bool sel = (idx == (uint8_t)app->selected_asset);
 
-        if(selected) {
+        if(sel) {
             canvas_set_color(canvas, ColorBlack);
             canvas_draw_box(canvas, 0, y - 8, 128, 17);
             canvas_set_color(canvas, ColorWhite);
@@ -944,17 +855,15 @@ static void draw_equipment(Canvas* canvas, void* context) {
 
         canvas_set_font(canvas, FontSecondary);
 
-        // Name – never trust the buffer
-        const char* name = app->assets[index].name;
-        if(!name || name[0] == '\0') name = "Unnamed";
+        const char* name = app->assets[idx].name;
+        if(!name || name[0] < 32) name = "Unnamed";
         canvas_draw_str(canvas, 3, y, name);
 
-        // Last service
-        char date_buf[28];
-        const char* last = app->assets[index].last_service;
-        if(!last || last[0] == '\0') last = "Never";
-        snprintf(date_buf, sizeof(date_buf), "Last: %s", last);
-        canvas_draw_str(canvas, 3, y + 8, date_buf);
+        char buf[28];
+        const char* last = app->assets[idx].last_service;
+        if(!last || last[0] < 32) last = "Never";
+        snprintf(buf, sizeof(buf), "Last: %s", last);
+        canvas_draw_str(canvas, 3, y + 8, buf);
 
         canvas_set_color(canvas, ColorBlack);
     }
