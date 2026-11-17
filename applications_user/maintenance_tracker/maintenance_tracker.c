@@ -1111,8 +1111,8 @@ static void main_menu_callback(void* context, uint32_t index) {
       app->selected_asset = app->asset_count ? 0 : -1;
       view_commit_model(app->equipment_view, true);
       switch_view(app, ViewEquipment);
-}
-    } else if(index == 1) {
+    }
+     else if(index == 1) {
         app->input_kind = InputNewAsset;
         memset(app->input_buffer, 0, sizeof(app->input_buffer));
         text_input_reset(app->text_input);
