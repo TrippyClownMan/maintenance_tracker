@@ -1216,8 +1216,8 @@ static void profile_menu_callback(void* context, uint32_t index) {
             view_commit_model(app->checklist_view, true);
         }
         switch_view(app, ViewChecklist);
-}
-        switch_view(app, ViewChecklist);
+
+        
     } else if(index == 2) {
         app->input_kind = InputNewService;
         memset(app->input_buffer, 0, sizeof(app->input_buffer));
