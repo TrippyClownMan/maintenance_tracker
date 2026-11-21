@@ -1332,14 +1332,25 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     view_set_context(app->equipment_view, app);
     view_set_draw_callback(app->equipment_view, draw_equipment);
     view_set_input_callback(app->equipment_view, equipment_input);
-    view_allocate_model(app->equipment_view, ViewModelTypeLockFree, 1);
+    view_allocate_model(app->equipment_view, ViewModelTypeLockFree, sizeof(MaintenanceApp*));
+        with_view_model(
+            app->equipment_view,
+            MaintenanceApp** model,
+            { *model = app;},
+            false);
+
     view_dispatcher_add_view(app->dispatcher, ViewEquipment, app->equipment_view);
 
     app->checklist_view = view_alloc();
     view_set_context(app->checklist_view, app);
     view_set_draw_callback(app->checklist_view, draw_checklist);
     view_set_input_callback(app->checklist_view, checklist_input);
-    view_allocate_model(app->checklist_view, ViewModelTypeLockFree, 1);
+    view_allocate_model(app->checklist_view, ViewModelTypeLockFree, sizeof(MaintenanceApp*));
+        with_view_model(
+            app->checklist_view,
+            MaintenanceApp** model,
+            { *model = app;},
+            false);
     view_dispatcher_add_view(app->dispatcher, ViewChecklist, app->checklist_view);
 
     app->notice_view = view_alloc();
