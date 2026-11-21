@@ -1,5 +1,5 @@
 //11/21/26 fixed view_allocate_model() to pass sizeof(App*) instead of 1, so draw_list() can access App* pointer as ctx
-
+//11/21/21 2.1.1 
 
 #include <furi.h>
 #include <furi_hal_rtc.h>
@@ -440,16 +440,19 @@ static bool load_assets(MaintenanceApp* app) {
     return success;
 }
 
+
+
 // Resets the service list to defaults, then appends this asset's custom entries.
 static void load_services(MaintenanceApp* app) {
     // Clear all slots before rebuilding the active checklist.
     memset(app->services, 0, sizeof(app->services));
     app->service_count = 0;
     
-    //for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
-    //    snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", standard_services[i]);
-    //    app->service_count++;
-    //}
+    for(uint8_t i = 0; (app->service_count < SERVICE_LIMIT); i++) {                                     //(i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
+        snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", services[i]);
+        app->service_count++;
+    }
+
     if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
        ((uint8_t)app->selected_asset >= app->asset_count)) {
         app->selected_asset = -1;
@@ -510,6 +513,7 @@ static void load_services(MaintenanceApp* app) {
     storage_file_free(file);
 }
 
+
 // Appends a user-defined service name to the selected asset's service file.
 static bool append_custom_service(MaintenanceApp* app, const char* service) {
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
@@ -528,6 +532,8 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {
     storage_file_free(file);
     return success;
 }
+
+
 
 // Appends the selected maintenance items and uptime timestamp to the asset log.
 static bool append_service_log(MaintenanceApp* app) {
@@ -905,6 +911,9 @@ static bool tracker_input(InputEvent* event, void* context) {
     return false;
 }
 
+
+
+
 // Draws the scrollable equipment selector and the selected asset's last-service date.
 static void draw_equipment(Canvas* canvas, void* context) {
     MaintenanceApp* app = *(MaintenanceApp**)context;
@@ -966,9 +975,9 @@ static void draw_checklist(Canvas* canvas, void* context) {
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 9, "Service checklist");
     uint8_t item_count = app->service_count + 1U;
-    uint8_t first = app->checklist_selection >= 4 ? app->checklist_selection - 3U : 0U;
-    for(uint8_t row = 0; (row < 4) && ((first + row) < item_count); row++) {
-        uint8_t index = first + row;
+    //uint8_t first = app->checklist_selection >= 4 ? app->checklist_selection - 3U : 0U;
+    for(uint8_t row = 0; (row >= 0 && row < item_count); row++) {                    //(row < 4) && ((first + row)
+        uint8_t index = row;                                                  //uint8_t index = first + row;
         uint8_t y = 22 + row * 10;
         bool selected = index == app->checklist_selection;
         if(selected) {
