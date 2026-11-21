@@ -448,16 +448,16 @@ static void load_services(MaintenanceApp* app) {
     memset(app->services, 0, sizeof(app->services));
     app->service_count = 0;
     
-    for(uint8_t i = 0; (app->service_count < SERVICE_LIMIT); i++) {                                     //(i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
-        snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", services[i]);
-        app->service_count++;
-    }
-
-    if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
-       ((uint8_t)app->selected_asset >= app->asset_count)) {
-        app->selected_asset = -1;
-        return;
-    }
+//    for(uint8_t i = 0; (app->service_count < SERVICE_LIMIT); i++) {                                     //(i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
+//        snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", service_count[i]);
+//        app->service_count++;
+//    }
+//
+//    if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
+//       ((uint8_t)app->selected_asset >= app->asset_count)) {
+//        app->selected_asset = -1;
+//       return;
+//    }
 
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char path[64];
