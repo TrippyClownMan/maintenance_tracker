@@ -105,12 +105,12 @@ typedef struct {
     char history[HISTORY_SIZE];
 } MaintenanceApp;
 
-static const char* const standard_services[] = {
-    "Oil",
-    "Filter",
-    "Inspection",
-    "Lubrication",
-};
+//static const char* const standard_services[] = {
+//    "Oil",
+  //  "Filter",
+    //"Inspection",
+    //"Lubrication",
+//};
 
 //static const uint8_t standard_service_count = COUNT_OF(standard_services);
 
