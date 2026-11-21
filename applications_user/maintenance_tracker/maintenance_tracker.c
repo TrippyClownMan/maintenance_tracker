@@ -1349,7 +1349,7 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     view_set_input_callback(app->tracker_view, tracker_input);
     view_allocate_model(app->tracker_view, ViewModelTypeLockFree, sizeof(MaintenanceApp*));
         with_view_model(
-            app->list_view,
+            app->tracker_view,
             MaintenanceApp** model,
             { *model = app;},
             false);
