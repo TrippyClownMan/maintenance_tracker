@@ -1,3 +1,6 @@
+//11/21/26 fixed view_allocate_model() to pass sizeof(App*) instead of 1, so draw_list() can access App* pointer as ctx
+
+
 #include <furi.h>
 #include <furi_hal_rtc.h>
 #include <datetime/datetime.h>
@@ -442,10 +445,11 @@ static void load_services(MaintenanceApp* app) {
     // Clear all slots before rebuilding the active checklist.
     memset(app->services, 0, sizeof(app->services));
     app->service_count = 0;
-    for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
-        snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", standard_services[i]);
-        app->service_count++;
-    }
+    
+    //for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
+    //    snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", standard_services[i]);
+    //    app->service_count++;
+    //}
     if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
        ((uint8_t)app->selected_asset >= app->asset_count)) {
         app->selected_asset = -1;
@@ -1308,7 +1312,7 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     view_dispatcher_add_view(
         app->dispatcher, ViewMain, submenu_get_view(app->main_menu));
 
-    app->profile_menu = submenu_alloc();
+    app->profile_menu = submenu_alloc();                                               // submenue_alloc = make mem box in profile_menu INSIDE app   [app[profile_menu] = submenu_alloc();]
     view_dispatcher_add_view(
         app->dispatcher, ViewProfile, submenu_get_view(app->profile_menu));
 
