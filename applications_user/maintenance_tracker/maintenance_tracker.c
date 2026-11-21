@@ -978,7 +978,7 @@ static void draw_checklist(Canvas* canvas, void* context) {
     uint8_t item_count = app->service_count + 1U;
     uint8_t first = app->checklist_selection >= 2 ? app->checklist_selection - 1U : 0U;
 
-    for(uint8_t row = 0; (row < 2) && (first + row) < item_count); row++) {                    //(row < 4) && ((first + row)
+    for(uint8_t row = 0; (row < 2) && (first + row) < item_count); row++ {                    //(row < 4) && ((first + row)
         uint8_t index = first + row;                                                  //uint8_t index = first + row;
         uint8_t y = 22 + row * 10;
         bool selected = index == app->checklist_selection;
