@@ -903,10 +903,13 @@ static bool tracker_input(InputEvent* event, void* context) {
 
 // Draws the scrollable equipment selector and the selected asset's last-service date.
 static void draw_equipment(Canvas* canvas, void* context) {
-    MaintenanceApp* app = context;
+    MaintenanceApp* app = *(MaintenanceApp**)context;
+    if(!app) return;
+
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 10, "Equipment");
+
     if(app->asset_count > ASSET_LIMIT) app->asset_count = ASSET_LIMIT;
     if(app->asset_count == 0) {
         app->selected_asset = -1;
@@ -921,9 +924,11 @@ static void draw_equipment(Canvas* canvas, void* context) {
     }
     uint8_t selected_asset = (uint8_t)app->selected_asset;
     uint8_t first = selected_asset >= 2 ? selected_asset - 1U : 0U;
+
     for(uint8_t row = 0; (row < 2) && ((first + row) < app->asset_count); row++) {
         uint8_t index = first + row;
         uint8_t y = 27 + row * 18;
+
         if(index == selected_asset) {
             canvas_set_color(canvas, ColorBlack);
             canvas_draw_box(canvas, 0, y - 8, 127, 17);
@@ -931,6 +936,7 @@ static void draw_equipment(Canvas* canvas, void* context) {
         } else {
             canvas_set_color(canvas, ColorBlack);
         }
+
         canvas_set_font(canvas, FontSecondary);
         char name[ASSET_NAME_SIZE] = {0};
         char last_service[DATE_SIZE] = {0};
@@ -1353,7 +1359,7 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
             MaintenanceApp** model,
             { *model = app;},
             false);
-        )
+
     view_dispatcher_add_view(app->dispatcher, ViewTracker, app->tracker_view);
 
     furi_record_close(RECORD_GUI);
