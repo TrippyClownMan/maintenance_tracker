@@ -446,7 +446,7 @@ static void load_services(MaintenanceApp* app) {
     memset(app->services, 0, sizeof(app->services));
     app->service_count = 0;
     
-    for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
+    //for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
     //    snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", standard_services[i]);
     //    app->service_count++;
     //}
