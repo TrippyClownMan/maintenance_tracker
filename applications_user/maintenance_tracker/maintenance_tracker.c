@@ -112,7 +112,7 @@ static const char* const standard_services[] = {
     "Lubrication",
 };
 
-static const uint8_t standard_service_count = COUNT_OF(standard_services);
+//static const uint8_t standard_service_count = COUNT_OF(standard_services);
 
 static void text_input_callback(void* context);
 static void profile_menu_callback(void* context, uint32_t index);
@@ -446,7 +446,7 @@ static void load_services(MaintenanceApp* app) {
     memset(app->services, 0, sizeof(app->services));
     app->service_count = 0;
     
-    //for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
+    for(uint8_t i = 0; (i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
     //    snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", standard_services[i]);
     //    app->service_count++;
     //}
