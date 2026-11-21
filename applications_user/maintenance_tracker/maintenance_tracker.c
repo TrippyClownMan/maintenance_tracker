@@ -970,7 +970,9 @@ static void draw_equipment(Canvas* canvas, void* context) {
 
 // Draws the service checklist, selection state, and final write action.
 static void draw_checklist(Canvas* canvas, void* context) {
-    MaintenanceApp* app = context;
+    MaintenanceApp* app = *(MaintenanceApp**)context;            // app = context;
+    if(!app) return;
+    
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 9, "Service checklist");
