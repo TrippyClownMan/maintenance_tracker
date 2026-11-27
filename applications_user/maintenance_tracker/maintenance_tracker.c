@@ -15,10 +15,8 @@
 #include <cli/cli.h> 
 #include <lib/toolbox/args.h>
 #include <lib/toolbox/hex.h>
-
 #include <lib/nfc/nfc_types.h>
-#include <lib/nfc/nfc_device.h>
-
+//#include <lib/nfc/nfc_device.h>
 #include <dolphin/dolphin.h>
 #include <datetime/datetime.h>
 #include <gui/gui.h>
@@ -27,7 +25,6 @@
 #include <gui/modules/submenu.h>
 #include <gui/modules/text_box.h>
 #include <gui/modules/text_input.h>
-
 #include <nfc_i.h>  
 #include <nfc/nfc.h>
 #include <nfc/nfc_device.h>
@@ -39,7 +36,6 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
-
 #include <datetime.h>
 
 
