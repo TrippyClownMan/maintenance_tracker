@@ -849,7 +849,7 @@ static bool build_service_uri(
     int length = snprintf(
         buffer,
         size,
-        "https://m.io",
+       // "https://m.io",
         (unsigned long)hours,
         (unsigned long)mask);
     return (length > 0) && ((size_t)length < size);
@@ -1139,10 +1139,12 @@ static bool tracker_input(InputEvent* event, void* context) {  //---------------
         switch_view(app, ViewProfile);
         return true;
     }
+    /*
     if(event->key == InputKeyOk) {
         if(process_asset_scan(app)) view_commit_model(app->tracker_view, true);
         return true;
     }
+    */
     return false;
 }
 
@@ -1163,7 +1165,7 @@ static void draw_equipment(Canvas* canvas, void* context) {  //-----------------
     canvas_draw_line(canvas, 63, 9, 87, 9);
     canvas_draw_line(canvas, 96, 9, 120, 9);
 
-    canvas_set_custom_u8g2_font(canvas, u8g2_font_4x6_tr);
+    canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 67, 26, "Last Serviced");
     canvas_draw_str(canvas, 67, 34, app->preview_date);  // e.g. "11.25.26"
     canvas_draw_str(canvas, 67, 43, app->preview_items); // e.g. "Oil, Filter"
@@ -1372,7 +1374,7 @@ static bool equipment_input(InputEvent* event, void* context) {  //-------------
     return false;
 }   
 */
-
+/*
 static bool checklist_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
 
@@ -1385,13 +1387,23 @@ static bool checklist_input(InputEvent* event, void* context) {
         }
         return true;
     }
-
-    static bool checklist_input(InputEvent* event, void* context) {
+*/
+static bool checklist_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     Asset* asset =
         (app->selected_asset >= 0 && (uint8_t)app->selected_asset < app->asset_count) ?
             &app->assets[(uint8_t)app->selected_asset] :
             NULL;
+
+        // 1. If the right-side pop-up box is open, Back/OK closes it
+    if(app->show_textbox) {
+        if(event->type == InputTypeShort &&
+           (event->key == InputKeyBack || event->key == InputKeyOk)) {
+            app->show_textbox = false;                  // Close right-side box
+            view_commit_model(app->checklist, true);    // Redraw checklist without box
+        }
+        return true;
+    }
 
     // 1. Hold Right opens right-side menu (populated based on whether checkboxes are active!)
     if(event->key == InputKeyRight && event->type == InputTypeLong) {
