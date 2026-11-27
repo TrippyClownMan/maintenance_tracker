@@ -165,22 +165,13 @@ typedef struct {
 
 
 
-
+static void show_notice(MaintenanceApp* app, const char* message, bool exits);
 static void text_input_callback(void* context);
 static void profile_menu_callback(void* context, uint32_t index);
 static void rebuild_profile_menu(MaintenanceApp* app);
 // Displays a notice and records where the user should return when it is dismissed.
-/*static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
-    snprintf(app->notice, sizeof(app->notice), "%s", message);
-    app->notice_dismiss_exits = exits;
-    app->notice_return_view = app->current_view;
-    if(app->current_view == ViewInput) {
-        app->notice_return_view =
-            app->input_kind == InputNewAsset ? ViewMain : ViewChecklist; // <-- Change ViewProfile to ViewChecklist here!
-    }
-    switch_view(app, ViewNotice);
-}
-*/
+
+ 
 static bool tracker_input(InputEvent* event, void* context);
 
 // Returns the shared SD-card path for the asset database.
@@ -317,10 +308,10 @@ static void switch_view(MaintenanceApp* app, MaintenanceViewId view_id) {//-----
     view_dispatcher_switch_to_view(app->dispatcher, view_id);
 }
 // Formats the current device uptime as a short timestamp (not wall-clock time).
-static void format_uptime(char timestamp[DATE_SIZE]) {//------------------------------------------------------//
+/*static void format_uptime(char timestamp[DATE_SIZE]) {//------------------------------------------------------//
     uint32_t seconds = furi_get_tick() / furi_kernel_get_tick_frequency();
     snprintf(timestamp, DATE_SIZE, "T+%lus", (unsigned long)seconds);
-}
+}*/
 // Ensures the app's SD-card data directory exists before files are accessed.
 static bool ensure_data_directory(MaintenanceApp* app) {//------------------------------------------------------//
     FS_Error error = storage_common_mkdir(app->storage, "/ext/apps_data/maintenance_tracker");
@@ -860,7 +851,7 @@ static bool build_service_uri(
     int length = snprintf(
         buffer,
         size,
-       "https://m.io",
+       "https://example.com",
         (unsigned long)hours,
         (unsigned long)mask);
     return (length > 0) && ((size_t)length < size);
@@ -1062,7 +1053,7 @@ static bool get_current_timestamp(DateTime* datetime, uint32_t* timestamp) {
 }                                                                           
 
 // Applies a scanned tag as either Clock In or Clock Out and logs the transition.
-static bool process_asset_scan(MaintenanceApp* app) {
+/*static bool process_asset_scan(MaintenanceApp* app) {
     char uid[ASSET_UID_TEXT_SIZE] = {0};
     if(!scan_asset_uid(uid)) {
         show_notice(app, "Could not read NTAG/Ultralight tag", false);
@@ -1117,7 +1108,7 @@ static bool process_asset_scan(MaintenanceApp* app) {
     app->session_asset_name[0] = '\0';
     app->tracker_state = TrackerStateIdle;
     return true;
-}
+}*/
 
 // Draws only the tracker state, stored asset/UID text, and accumulated runtime.
 static void draw_tracker(Canvas* canvas, void* context) {
@@ -1578,7 +1569,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) { 
 }
 
 // Rebuilds the selected asset menu with its clock-tracking action.
-static void rebuild_profile_menu(MaintenanceApp* app) {  //------------------------------------------------------// 
+/*static void rebuild_profile_menu(MaintenanceApp* app) {  //------------------------------------------------------// 
     submenu_reset(app->profile_menu);
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char header[64];
@@ -1588,7 +1579,7 @@ static void rebuild_profile_menu(MaintenanceApp* app) {  //---------------------
     submenu_add_item(app->profile_menu, "Maintenance Records", 1, profile_menu_callback, app);     //** ! **\\// Changed name from "view history/Log \\//"
     submenu_add_item(app->profile_menu, "Add Service", 2, profile_menu_callback, app);
     submenu_add_item(app->profile_menu, "NFC Tag(s)", 3, profile_menu_callback, app);
-}
+}*/
 
 // Routes main-menu selections to equipment browsing or new-asset input.
 static void main_menu_callback(void* context, uint32_t index) {  //------------------------------------------------------//
@@ -1632,6 +1623,7 @@ static void main_menu_callback(void* context, uint32_t index) {  //-------------
 }
 */
 static void text_input_callback(void* context) {
+    MaintenanceApp* app = context;
     if((app->input_buffer[0] == '\0') ||
        (strchr(app->input_buffer, '\t') != NULL) ||
        (strchr(app->input_buffer, '\n') != NULL) ||
@@ -1734,7 +1726,7 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
     }
 
 
-    if(app->show_popup) {                                                   /*MENU POP-UP*/
+   /* if(app->show_popup) {                                                   MENU POP-UP
     // 1. White background box (clears underlying list text)
     canvas_set_color(canvas, ColorWhite);
     canvas_draw_box(canvas, 50, 14, 65, 40);
@@ -1743,7 +1735,7 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
     canvas_set_color(canvas, ColorBlack);
     canvas_draw_rframe(canvas, 50, 14, 65, 40, 3);
 
-    / /* 3. Draw the checkbox square (8x8 px at x=22, y=22)
+    /  3. Draw the checkbox square (8x8 px at x=22, y=22)
     canvas_draw_frame(canvas, 22, 22, 8, 8);
     if(app->popup_checked) {
         // Draw an 'X' (or solid fill) inside the checkbox when checked
@@ -1754,10 +1746,10 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
     // 4. Label & controls hint
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 35, 29, "Service Done");
-    canvas_draw_str(canvas, 20, 44, "OK: toggle  Back: close");
+    canvas_draw_str(canvas, 20, 44, "OK: toggle  Back: close"); */
 }
-    }
-}
+    
+
 
 //Service callback
 
