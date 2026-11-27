@@ -479,7 +479,7 @@ static bool append_tracker_event(
 }
 
 // Returns true if valid clock-in & clock-out exist, and fills total hours + remaining minutes
-static bool calc_clock_duration(
+/*static bool calc_clock_duration(
     const MaintenanceApp* app,
     uint32_t* out_hours,
     uint32_t* out_minutes) {
@@ -492,7 +492,7 @@ static bool calc_clock_duration(
     if(out_minutes) *out_minutes = (elapsed_seconds % 3600U) / 60U;
     return true;
 }
-
+*/
 /*\\\__\\\__///__///__///__///__///__///|\\\__\\\__\\\__\\\__\\\__\\\__///__///_________________
 _______________________________________________________________________________________________|
 */
@@ -1243,7 +1243,7 @@ static void draw_checklist(Canvas* canvas, void* context) { //------------------
         }
         canvas_set_font(canvas, FontSecondary);
         if(index < app->service_count) {
-            char line[32];
+            char line[LOG_LINE_SIZE];
             snprintf(
                 line,
                 sizeof(line),
