@@ -1320,7 +1320,6 @@ static bool equipment_input(InputEvent* event, void* context) {  //-------------
         load_services(app);
         view_commit_model(app->checklist_view, true);
         switch_view(app, ViewChecklist); // Jump straight to Checklist
-        }
         return true;
     }
     return false;
