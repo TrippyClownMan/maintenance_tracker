@@ -46,6 +46,10 @@
 #define NFC_NDEF_BUFFER_SIZE (URI_SIZE + 8U)
 #define ASSET_UID_TEXT_SIZE 25
 #define TRACKER_LOG_PATH EXT_PATH("apps_data/maintenance_tracker/log.txt")
+#define PATH_SIZE 64
+#define NOTICE_SIZE 96
+#define LOG_LINE_SIZE 256
+#define PREVIEW_ITEMS_SIZE 128
 
 typedef enum {
     ViewMain,
@@ -130,9 +134,10 @@ typedef struct {
     char session_uid[ASSET_UID_TEXT_SIZE];
     char session_asset_name[ASSET_NAME_SIZE];
     char preview_date[DATE_SIZE];
-    char preview_items[128];
-    char notice;
+    char preview_items[PREVIEW_ITEMS_SIZE];
+    char notice[NOTICE_SIZE];
     char history[HISTORY_SIZE];
+    char line[LOG_LINE_SIZE];
 
     // --- 32-bit Numbers & Enums ---
     uint32_t current_view;
@@ -735,7 +740,7 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {  /
     if(!any_checked) return false;
 
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    char path;
+    char path[PATH_SIZE];
     asset_log_path(asset, path, sizeof(path));
 
     char date_str[DATE_SIZE];
@@ -748,7 +753,7 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {  /
     bool success = false;
 
     if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
-        char line;
+        char line[LOG_LINE_SIZE];
         int length = 0;
 
         if(has_clock_duration) {
@@ -1474,7 +1479,7 @@ static bool checklist_input(InputEvent* event, void* context) {
                         true);
                     switch_view(app, ViewInput);
                 } else if(app->right_menu_selection == 2 && asset) {
-                    char path;
+                    char path[PATH_SIZE];;
                     asset_log_path(asset, path, sizeof(path));
                     File* file = storage_file_alloc(app->storage);
                     size_t used = 0;
