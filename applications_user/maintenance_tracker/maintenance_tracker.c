@@ -1,14 +1,3 @@
-// 11/21/26 fixed view_allocate_model() to pass sizeof(App*) instead of 1, so draw_list() can access App* pointer as ctx
-// 11/21/26 removed 
-//11/21/21 2.1.1 
-// 11 /22/ 26
-// 11/25/26 - added equipment view load function, and callback in main menu callback  -- highlighted curson length  *!* Draw canvas box for quick log 
-                         
-
-
-
-/* -------- Make textbox draw_view  &&  input profile & context
-                         */
 #include <furi.h>
 #include <furi_hal_rtc.h>
 #include <furi_hal_nfc.h>
@@ -26,7 +15,7 @@
 #include <gui/modules/text_box.h>
 #include <gui/modules/text_input.h> 
 
-#include <nfc_i.h>  
+//#include <nfc_i.h>  
 #include <nfc/nfc.h>
 #include <nfc/nfc_device.h>
 #include <nfc/nfc_poller.h>
