@@ -1281,7 +1281,7 @@ static void draw_checklist(Canvas* canvas, void* context) { //------------------
 
 // Renders the app's short status or error message.
 static void draw_notice(Canvas* canvas, void* context) {
-    MaintenanceApp* app = context;
+    MaintenanceApp* app = *(MaintenanceApp**)context;
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 11, "Maintenance");
