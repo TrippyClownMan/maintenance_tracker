@@ -124,11 +124,11 @@ typedef struct {
     Storage* storage;
     Asset assets[ASSET_LIMIT];
     char preview_date [DATE_SIZE];
-    char preview_items;
+    char preview_items[128];
     uint8_t asset_count;
     int8_t selected_asset;    
-    uint32_t* out_hours;
-    uint32_t* out_minutes;
+    //uint32_t* out_hours;
+    //uint32_t* out_minutes;
     bool storage_ready;
     char input_buffer[ASSET_NAME_SIZE];
     InputKind input_kind;
@@ -136,6 +136,9 @@ typedef struct {
     bool service_checked[SERVICE_LIMIT];
     uint8_t service_count;
     uint8_t checklist_selection;
+    uint8_t right_menu_selection;
+    bool checklist_right_open;
+    bool checklist_right_has_checks;
     TrackerState tracker_state;
     // uint32_t session_start_timestamp;
     //uint32_t chip_accumulated_seconds;
