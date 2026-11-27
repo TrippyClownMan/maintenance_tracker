@@ -167,8 +167,8 @@ typedef struct {
 
 static void show_notice(MaintenanceApp* app, const char* message, bool exits);
 static void text_input_callback(void* context);
-static void profile_menu_callback(void* context, uint32_t index);
-static void rebuild_profile_menu(MaintenanceApp* app);
+//static void profile_menu_callback(void* context, uint32_t index);
+//static void rebuild_profile_menu(MaintenanceApp* app);
 // Displays a notice and records where the user should return when it is dismissed.
 
  
@@ -445,7 +445,7 @@ static bool load_tracker_total(MaintenanceApp* app) {//-------------------------
 }
 
 // Appends one clock event with its local time, UID, session duration, and new total.
-static bool append_tracker_event(
+/*static bool append_tracker_event(
     MaintenanceApp* app,
     const DateTime* datetime,
     const char* uid,
@@ -481,7 +481,7 @@ static bool append_tracker_event(
 }
 
 // Returns true if valid clock-in & clock-out exist, and fills total hours + remaining minutes
-/*static bool calc_clock_duration(
+static bool calc_clock_duration(
     const MaintenanceApp* app,
     uint32_t* out_hours,
     uint32_t* out_minutes) {
@@ -494,8 +494,8 @@ static bool append_tracker_event(
     if(out_minutes) *out_minutes = (elapsed_seconds % 3600U) / 60U;
     return true;
 }
-*/
-/*\\\__\\\__///__///__///__///__///__///|\\\__\\\__\\\__\\\__\\\__\\\__///__///_________________
+
+\\\__\\\__///__///__///__///__///__///|\\\__\\\__\\\__\\\__\\\__\\\__///__///_________________
 _______________________________________________________________________________________________|
 */
 
@@ -503,6 +503,9 @@ ________________________________________________________________________________
 
 
 // Rewrites all asset records to the tab-separated SD-card database.
+
+
+
 static bool write_asset_database(MaintenanceApp* app) {//------------------------------------------------------//
     File* file = storage_file_alloc(app->storage);
     bool success = false;
@@ -1025,7 +1028,7 @@ static bool show_payload(MaintenanceApp* app, bool include_services) {
 }
 
 // Reads a supported NTAG/Ultralight asset tag and returns its UID as uppercase hex.
-static bool scan_asset_uid(char uid_text[ASSET_UID_TEXT_SIZE]) {
+/*static bool scan_asset_uid(char uid_text[ASSET_UID_TEXT_SIZE]) {
     Nfc* nfc = nfc_alloc();
     MfUltralightData* tag_data = mf_ultralight_alloc();
     bool success = false;
@@ -1050,7 +1053,7 @@ static bool get_current_timestamp(DateTime* datetime, uint32_t* timestamp) {
     if(!datetime_validate_datetime(datetime)) return false;
     *timestamp = datetime_datetime_to_timestamp(datetime);
     return true;
-}                                                                           
+}  */                                                                         
 
 // Applies a scanned tag as either Clock In or Clock Out and logs the transition.
 /*static bool process_asset_scan(MaintenanceApp* app) {
@@ -1576,7 +1579,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) { 
     snprintf(header, sizeof(header), "%s", asset->name);
     submenu_set_header(app->profile_menu, header);
     submenu_add_item(app->profile_menu, "Service List", 0, profile_menu_callback, app);
-    submenu_add_item(app->profile_menu, "Maintenance Records", 1, profile_menu_callback, app);     //** ! **\\// Changed name from "view history/Log \\//"
+    submenu_add_item(app->profile_menu, "Maintenance Records", 1, profile_menu_callback, app);     // Changed name from "view history/Log \\//"
     submenu_add_item(app->profile_menu, "Add Service", 2, profile_menu_callback, app);
     submenu_add_item(app->profile_menu, "NFC Tag(s)", 3, profile_menu_callback, app);
 }*/
@@ -1662,7 +1665,7 @@ static void text_input_callback(void* context) {
 
 // Handles profile actions: history, checklist, custom service, clock tracking, and NFC write.
 // profile call
-static void profile_menu_callback(void* context, uint32_t index) {  //------------------------------------------------------//  
+/*static void profile_menu_callback(void* context, uint32_t index) {  //------------------------------------------------------//  
     MaintenanceApp* app = context;
     if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
        ((uint8_t)app->selected_asset >= app->asset_count)) {
@@ -1672,7 +1675,7 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
         return;
     }
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    if(index == 1) {                                              /* load service log*/
+    if(index == 1) {                                              /// load service log
         char path[64];
         asset_log_path(asset, path, sizeof(path));
         File* file = storage_file_alloc(app->storage);
@@ -1724,9 +1727,9 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
     //} else if(index == 4) {
         show_payload(app, false);
     }
+/////////////////////
 
-
-   /* if(app->show_popup) {                                                   MENU POP-UP
+   if(app->show_popup) {                                                   MENU POP-UP
     // 1. White background box (clears underlying list text)
     canvas_set_color(canvas, ColorWhite);
     canvas_draw_box(canvas, 50, 14, 65, 40);
@@ -1746,8 +1749,8 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
     // 4. Label & controls hint
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 35, 29, "Service Done");
-    canvas_draw_str(canvas, 20, 44, "OK: toggle  Back: close"); */
-}
+    canvas_draw_str(canvas, 20, 44, "OK: toggle  Back: close"); 
+}*/
     
 
 
