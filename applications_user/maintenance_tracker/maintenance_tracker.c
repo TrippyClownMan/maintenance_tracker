@@ -854,7 +854,7 @@ static bool build_service_uri(
     int length = snprintf(
         buffer,
         size,
-       "https://example.com",
+       "https://example.com/%lu/%lu",
         (unsigned long)hours,
         (unsigned long)mask);
     return (length > 0) && ((size_t)length < size);
