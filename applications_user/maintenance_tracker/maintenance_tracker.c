@@ -16,7 +16,7 @@
 #include <lib/toolbox/args.h>
 #include <lib/toolbox/hex.h>
 //#include <lib/nfc/nfc_types.h>
-//#include <lib/nfc/nfc_device.h>
+
 #include <dolphin/dolphin.h>
 #include <datetime/datetime.h>
 #include <gui/gui.h>
@@ -24,11 +24,13 @@
 #include <gui/view_dispatcher.h>
 #include <gui/modules/submenu.h>
 #include <gui/modules/text_box.h>
-#include <gui/modules/text_input.h>
+#include <gui/modules/text_input.h> 
+
 #include <nfc_i.h>  
 #include <nfc/nfc.h>
 #include <nfc/nfc_device.h>
 #include <nfc/nfc_poller.h>
+
 #include <nfc/protocols/mf_ultralight/mf_ultralight.h>
 #include <nfc/protocols/mf_ultralight/mf_ultralight_poller_sync.h>
 #include <storage/storage.h>
@@ -89,7 +91,7 @@ typedef enum {
     NfcWriteSnapshotFailed,
 } NfcWriteResult;
 
-/*enum NfcCustomEvent {
+enum NfcCustomEvent {
     // Reserve first 100 events for button types and indexes, starting from 0
     NfcCustomEventReserved = 100,
     
