@@ -1819,8 +1819,8 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     app->main_menu = submenu_alloc();
     submenu_set_header(app->main_menu, "Maintenance Tracker");
     submenu_add_item(app->main_menu, "Show Equipment", 0, main_menu_callback, app);
-    //submenu_add_item(app->main_menu, "Scan Equipment", 1, main_menu_callback, app);
-    submenu_add_item(app->main_menu, "NFC Toolbox", 3, main_menu_callback, app);
+    submenu_add_item(app->main_menu, "Scan Equipment", 1, main_menu_callback, app);
+    submenu_add_item(app->main_menu, "NFC Toolbox", 2, main_menu_callback, app);
     view_dispatcher_add_view(
         app->dispatcher, ViewMain, submenu_get_view(app->main_menu));
 
