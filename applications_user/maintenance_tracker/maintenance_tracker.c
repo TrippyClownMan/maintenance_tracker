@@ -94,7 +94,7 @@ enum NfcCustomEvent {
     NfcCustomEventRpcSessionClose,
     NfcCustomEventUpdateLog,
     NfcCustomEventSaveShadow,
-}; */
+}; 
 
 
 
