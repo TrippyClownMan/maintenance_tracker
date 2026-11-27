@@ -140,8 +140,8 @@ typedef struct {
     bool checklist_right_open;
     bool checklist_right_has_checks;
     TrackerState tracker_state;
-    // uint32_t session_start_timestamp;
-    //uint32_t chip_accumulated_seconds;
+    uint32_t session_start_timestamp;
+    uint32_t chip_accumulated_seconds;
 
     char session_uid[ASSET_UID_TEXT_SIZE];
     char session_asset_name[ASSET_NAME_SIZE];
