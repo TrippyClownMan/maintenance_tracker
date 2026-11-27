@@ -14,8 +14,7 @@
 #include <gui/modules/submenu.h>
 #include <gui/modules/text_box.h>
 #include <gui/modules/text_input.h> 
-#include <gui/canvas.h>
-#include <u8g2_glue.h>
+
 
 //#include <nfc_i.h>  
 #include <nfc/nfc.h>
