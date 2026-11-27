@@ -56,7 +56,7 @@ typedef enum {
     ViewNotice,
     ViewTracker,
     ServicePreview,
-    ServiceOptions
+    ServiceOptions,
 } MaintenanceViewId;
 
 typedef enum {
@@ -103,7 +103,9 @@ typedef struct {
     //uint32_t lifetime_seconds;
     uint32_t log_date;
     uint32_t clock_in_ts;
-    uint32_t clock_out_ts
+    uint32_t clock_out_ts;
+    uint32_t* out_hours;
+    uint32_t* out_minutes;
     char name[ASSET_NAME_SIZE];
     char last_service[DATE_SIZE];
 } Asset;
@@ -122,6 +124,8 @@ typedef struct {
     /*ViewStack* ViewStack*/
     Storage* storage;
     Asset assets[ASSET_LIMIT];
+    char preview_date [DATE_SIZE];
+    char preview_items;
     uint8_t asset_count;
     int8_t selected_asset;
     bool storage_ready;
@@ -145,8 +149,6 @@ typedef struct {
     bool notice_dismiss_exits;
     MaintenanceViewId notice_return_view;
     char history[HISTORY_SIZE];
-    char preview_date [DATE_SIZE]
-    char preview_items
 } MaintenanceApp;
 
 
@@ -195,7 +197,7 @@ static bool has_any_service_checked(const MaintenanceApp* app) {
 }
 
 
-static bool calc_asset_clock_duration(
+static bool calc_asset_clock_duration(const MaintenanceApp* app) 
     const Asset* asset,
     uint32_t* out_hours,
     uint32_t* out_minutes) {
