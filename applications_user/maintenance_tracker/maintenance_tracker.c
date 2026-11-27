@@ -169,7 +169,17 @@ typedef struct {
 static void text_input_callback(void* context);
 static void profile_menu_callback(void* context, uint32_t index);
 static void rebuild_profile_menu(MaintenanceApp* app);
-static void show_notice(MaintenanceApp* app, const char* message, bool exits);
+// Displays a notice and records where the user should return when it is dismissed.
+static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
+    snprintf(app->notice, sizeof(app->notice), "%s", message);
+    app->notice_dismiss_exits = exits;
+    app->notice_return_view = app->current_view;
+    if(app->current_view == ViewInput) {
+        app->notice_return_view =
+            app->input_kind == InputNewAsset ? ViewMain : ViewChecklist; // <-- Change ViewProfile to ViewChecklist here!
+    }
+    switch_view(app, ViewNotice);
+}
 static bool tracker_input(InputEvent* event, void* context);
 
 // Returns the shared SD-card path for the asset database.
@@ -1249,8 +1259,8 @@ static void draw_checklist(Canvas* canvas, void* context) { //------------------
             snprintf(
                 line,
                 sizeof(line),
-                "%d %s",
-                app->service_checked[index] ? '[x]' : '[ ]',
+                "%s %s",
+                app->service_checked[index] ? "[x]" : "[ ]",
                 app->services[index]);
             canvas_draw_str(canvas, 3, y, line);
         } else {
@@ -1458,7 +1468,7 @@ static bool checklist_input(InputEvent* event, void* context) {
                     write_asset_database(app);
                     view_commit_model(app->checklist_view, true);
                 }
-            } else {
+             }else {
                 // UNCHECKED OPTIONS: 0 = Clock In/Out, 1 = Add Service, 2 = View History
                 if(app->right_menu_selection == 0 && asset) {
                     if(asset->clock_in_ts > 0 && asset->clock_out_ts == 0) {
@@ -1604,9 +1614,9 @@ static void main_menu_callback(void* context, uint32_t index) {  //-------------
 }
 
 // Validates text input, then creates an asset or appends a custom service.
-static void text_input_callback(void* context) {  //------------------------------------------------------//    
+/*static void text_input_callback(void* context) {  //------------------------------------------------------//    
     MaintenanceApp* app = context;
-    if(app->show_popup) {
+    //if(app->show_popup) {
     if(event->type == InputTypeShort) {
         if(event->key == InputKeyOk) {
             app->popup_checked = !app->popup_checked; // Toggle [ ] <-> [x]
@@ -1617,7 +1627,9 @@ static void text_input_callback(void* context) {  //----------------------------
         }
     }
     return true; // Consume input so background screen doesn't move
+
 }
+*/
     if((app->input_buffer[0] == '\0') ||
        (strchr(app->input_buffer, '\t') != NULL) ||
        (strchr(app->input_buffer, '\n') != NULL) ||
@@ -1645,8 +1657,9 @@ static void text_input_callback(void* context) {  //----------------------------
             show_notice(app, "Service list is full", false);
         } else if(append_custom_service(app, app->input_buffer)) {
             load_services(app);
-            rebuild_profile_menu(app);
-            switch_view(app, ViewProfile);
+            view_commit_model(app_>checklist_view, true);
+            //rebuild_profile_menu(app);
+            switch_view(app, ViewChecklist);
         } else {
             show_notice(app, "Could not save service", false);
         }
@@ -1770,7 +1783,7 @@ static bool navigation_callback(void* context) {  //----------------------------
     //} else if(current == ViewTracker) {
     //    switch_view(app, ViewProfile);
     } else if(current == ViewInput) {
-        switch_view(app, app->input_kind == InputNewAsset ? ViewMain : ViewProfile);
+        switch_view(app, app->input_kind == InputNewAsset ? ViewMain : ViewChecklist);
     } else if(current == ViewNotice) {
         if(app->notice_dismiss_exits) {
             view_dispatcher_stop(app->dispatcher);
