@@ -104,8 +104,7 @@ typedef struct {
     uint32_t log_date;
     uint32_t clock_in_ts;
     uint32_t clock_out_ts;
-    uint32_t* out_hours;
-    uint32_t* out_minutes;
+
     char name[ASSET_NAME_SIZE];
     char last_service[DATE_SIZE];
 } Asset;
@@ -127,7 +126,9 @@ typedef struct {
     char preview_date [DATE_SIZE];
     char preview_items;
     uint8_t asset_count;
-    int8_t selected_asset;
+    int8_t selected_asset;    
+    uint32_t* out_hours;
+    uint32_t* out_minutes;
     bool storage_ready;
     char input_buffer[ASSET_NAME_SIZE];
     InputKind input_kind;
@@ -213,11 +214,9 @@ static bool calc_asset_clock_duration(const MaintenanceApp* app)
                                                                                         /*  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% */
                                                                                         /* %%%%%%%%%%%%%%%%%%%%%%   ***    QUICK_LOG_PATH  *** %%%%%%%%%%%%%%%%%%%%%*/
 static void load_quick_log(MaintenanceApp* app) {
-    // 1. Always wipe old preview text clean first
     memset(app->preview_date, 0, sizeof(app->preview_date));
     memset(app->preview_items, 0, sizeof(app->preview_items));
 
-    // 2. Safety check: if no asset is selected, show fallback text
     if(app->asset_count == 0 || app->selected_asset < 0 ||
        (uint8_t)app->selected_asset >= app->asset_count) {
         snprintf(app->preview_date, sizeof(app->preview_date), "None");
@@ -226,9 +225,7 @@ static void load_quick_log(MaintenanceApp* app) {
     }
 
     uint8_t idx = (uint8_t)app->selected_asset;
-
-    // 3. Copy the asset's most recent service date directly from its struct
-    if(app->assets[idx].last_service != '\0') {
+    if(app->assets[idx].last_service[0] != '\0') {
         snprintf(
             app->preview_date,
             sizeof(app->preview_date),
@@ -238,47 +235,49 @@ static void load_quick_log(MaintenanceApp* app) {
         snprintf(app->preview_date, sizeof(app->preview_date), "Never");
     }
 
-    // 4. Open this asset's log file & scrape the latest service items into app->preview_items
-    // (Plug in your existing log path builder here!)
-    Storage* storage = furi_record_open(RECORD_STORAGE);
-    File* file = storage_file_alloc(storage);
-
-    char log_path; // Buffer to hold APP_DATA_PATH("<id>.txt")
-
-// Build the exact file path using your existing helper!
+    char log_path[64];
     asset_log_path(&app->assets[idx], log_path, sizeof(log_path));
+    File* file = storage_file_alloc(app->storage);
 
-        if(storage_file_open(file, log_path, FSAM_READ, FSOM_OPEN_EXISTING)) {
-            // Read the last 128 bytes of the file to grab the newest service entry
-            uint64_t size = storage_file_size(file);
-            uint64_t offset = size > 128 ? size - 128 : 0;
-            storage_file_seek(file, offset, true);
+    if(storage_file_open(file, log_path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        uint64_t size = storage_file_size(file);
+        uint64_t offset = size > 128 ? size - 128 : 0;
+        storage_file_seek(file, offset, true);
 
-            char tail = {0};
-            uint16_t bytes_read = storage_file_read(file, tail, sizeof(tail) - 1);
-            tail[bytes_read] = '\0';
+        char tail[128] = {0};
+        uint16_t bytes_read = storage_file_read(file, tail, sizeof(tail) - 1);
+        tail[bytes_read] = '\0';
 
-             // Strip any trailing newline(s) at the very end of the file first
-            while(bytes_read > 0 && (tail[bytes_read - 1] == '\n' || tail[bytes_read - 1] == '\r')) {
-                tail[--bytes_read] = '\0';
+        // Strip any trailing newline(s) at the end of the file
+        while(bytes_read > 0 &&
+              (tail[bytes_read - 1] == '\n' || tail[bytes_read - 1] == '\r')) {
+            tail[--bytes_read] = '\0';
+        }
+
+        // Find the start of the last line
+        char* last_line = tail;
+        for(uint16_t i = 0; i < bytes_read; i++) {
+            if(tail[i] == '\n' && tail[i + 1] != '\0') {
+                last_line = &tail[i + 1];
             }
+        }
 
-            // Walk backward to find the start of the last line
-            char* last_line = tail;
-            for(uint16_t i = 0; i < bytes_read; i++) {
-                if(tail[i] == '\n' && tail[i + 1] != '\0') {
-                    last_line = &tail[i + 1];
-                }
+        // Extract just the service list after " | "
+        char* sep = strstr(last_line, " | ");
+        if(sep != NULL) {
+            snprintf(app->preview_items, sizeof(app->preview_items), "%s", sep + 3);
+        } else {
+            snprintf(app->preview_items, sizeof(app->preview_items), "%s", last_line);
+        }
+
+        storage_file_close(file);
+    } else {
+        snprintf(app->preview_items, sizeof(app->preview_items), "No history");
     }
 
-    snprintf(app->preview_items, sizeof(app->preview_items), "%s", last_line);
-} else {
-    snprintf(app->preview_items, sizeof(app->preview_items), "No history");
-}
-    storage_file_close(file);
     storage_file_free(file);
-    furi_record_close(RECORD_STORAGE);
 }
+
 
 
 
