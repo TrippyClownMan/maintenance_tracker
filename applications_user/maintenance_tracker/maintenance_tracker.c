@@ -652,6 +652,7 @@ static void load_services(MaintenanceApp* app) {
     if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
        ((uint8_t)app->selected_asset >= app->asset_count)) {
         app->selected_asset = -1;
+
         return;
     }
 
@@ -1770,7 +1771,7 @@ static bool navigation_callback(void* context) {  //----------------------------
     }
     if(current == ViewEquipment) {
         switch_view(app, ViewMain);
-    } else if(current == ViewProfile) {
+    } else if(current == ViewChecklist) {
         switch_view(app, ViewEquipment);
     //} else if(current == ViewHistory) {
     //    switch_view(app, ViewProfile);
