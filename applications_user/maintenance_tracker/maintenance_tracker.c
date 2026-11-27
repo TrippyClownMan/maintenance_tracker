@@ -256,7 +256,7 @@ static void load_quick_log(MaintenanceApp* app) {
         uint64_t offset = size > 128 ? size - 128 : 0;
         storage_file_seek(file, offset, true);
 
-        char tail[128] = {0};
+        char tail[PREVIEW_ITEMS_SIZE] = {0};
         uint16_t bytes_read = storage_file_read(file, tail, sizeof(tail) - 1);
         tail[bytes_read] = '\0';
 
@@ -1249,7 +1249,7 @@ static void draw_checklist(Canvas* canvas, void* context) { //------------------
             snprintf(
                 line,
                 sizeof(line),
-                "%s %s",
+                "%d %s",
                 app->service_checked[index] ? '[x]' : '[ ]',
                 app->services[index]);
             canvas_draw_str(canvas, 3, y, line);
@@ -1395,14 +1395,6 @@ static bool checklist_input(InputEvent* event, void* context) {
             &app->assets[(uint8_t)app->selected_asset] :
             NULL;
 
-        // 1. If the right-side pop-up box is open, Back/OK closes it
-    if(app->show_textbox) {
-        if(event->type == InputTypeShort &&
-           (event->key == InputKeyBack || event->key == InputKeyOk)) {
-            app->show_textbox = false;                  // Close right-side box
-            view_commit_model(app->checklist, true);    // Redraw checklist without box
-        }
-        return true;
     }
 
     // 1. Hold Right opens right-side menu (populated based on whether checkboxes are active!)
