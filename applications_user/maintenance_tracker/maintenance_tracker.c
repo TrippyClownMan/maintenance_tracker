@@ -1771,7 +1771,7 @@ static bool navigation_callback(void* context) {  //----------------------------
     }
     if(current == ViewEquipment) {
         switch_view(app, ViewMain);
-    } else if(current == ViewChecklist) {
+    } else if(current == ViewProfile) {
         switch_view(app, ViewEquipment);
     //} else if(current == ViewHistory) {
     //    switch_view(app, ViewProfile);
