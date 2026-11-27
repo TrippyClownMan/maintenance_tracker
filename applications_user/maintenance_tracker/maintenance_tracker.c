@@ -130,7 +130,7 @@ typedef struct {
     char session_uid[ASSET_UID_TEXT_SIZE];
     char session_asset_name[ASSET_NAME_SIZE];
     char preview_date[DATE_SIZE];
-    char preview_items;
+    char preview_items[128];
     char notice;
     char history[HISTORY_SIZE];
 
