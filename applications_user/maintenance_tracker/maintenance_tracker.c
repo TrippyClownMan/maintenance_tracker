@@ -14,6 +14,7 @@
 #include <gui/modules/submenu.h>
 #include <gui/modules/text_box.h>
 #include <gui/modules/text_input.h> 
+#include <u8g2.h>
 
 //#include <nfc_i.h>  
 #include <nfc/nfc.h>
@@ -110,8 +111,9 @@ typedef struct {
 } Asset;
 
 typedef struct {
+    // --- Pointers (All 4-byte aligned at top) ---
     ViewDispatcher* dispatcher;
-    Submenu* main_menu;                    /*submenu*  ( * = pointer variable) */
+    Submenu* main_menu;
     Submenu* profile_menu;
     TextInput* text_input;
     TextBox* text_box;
@@ -119,41 +121,43 @@ typedef struct {
     View* checklist_view;
     View* notice_view;
     View* tracker_view;
-    View* service_preview;
-    /*ViewStack* ViewStack*/
     Storage* storage;
+
+    // --- Arrays & Text Buffers ---
     Asset assets[ASSET_LIMIT];
-    char preview_date [DATE_SIZE];
-    char preview_items[128];
-    uint8_t asset_count;
-    int8_t selected_asset;    
-    //uint32_t* out_hours;
-    //uint32_t* out_minutes;
-    bool storage_ready;
-    char input_buffer[ASSET_NAME_SIZE];
-    InputKind input_kind;
     char services[SERVICE_LIMIT][SERVICE_NAME_SIZE];
-    bool service_checked[SERVICE_LIMIT];
+    char input_buffer[ASSET_NAME_SIZE];
+    char session_uid[ASSET_UID_TEXT_SIZE];
+    char session_asset_name[ASSET_NAME_SIZE];
+    char preview_date[DATE_SIZE];
+    char preview_items;
+    char notice;
+    char history[HISTORY_SIZE];
+
+    // --- 32-bit Numbers & Enums ---
+    uint32_t current_view;
+    uint32_t session_start_timestamp;
+    uint32_t chip_accumulated_seconds;
+    TrackerState tracker_state;
+    InputKind input_kind;
+    MaintenanceViewId notice_return_view;
+
+    // --- 8-bit Counters & Indices ---
+    int8_t selected_asset;
+    uint8_t asset_count;
     uint8_t service_count;
     uint8_t checklist_selection;
     uint8_t right_menu_selection;
+
+    // --- Grouped Booleans ---
+    bool service_checked[SERVICE_LIMIT];
+    bool storage_ready;
+    bool checklist_log_saved;
     bool checklist_right_open;
     bool checklist_right_has_checks;
-    TrackerState tracker_state;
-    uint32_t session_start_timestamp;
-    uint32_t chip_accumulated_seconds;
-
-    char session_uid[ASSET_UID_TEXT_SIZE];
-    char session_asset_name[ASSET_NAME_SIZE];
-    bool checklist_log_saved;
-    bool show_popup;      // true = pop-up is visible on screen
-    char log_preview;
-    uint32_t current_view;
-    char notice[96];
     bool notice_dismiss_exits;
-    MaintenanceViewId notice_return_view;
-    char history[HISTORY_SIZE];
 } MaintenanceApp;
+
 
 
 
@@ -202,24 +206,16 @@ static bool has_any_service_checked(const MaintenanceApp* app) {
 
 
 static bool calc_asset_clock_duration(
-    const MaintenanceApp* app,
+    const Asset* asset,
     uint32_t* out_hours,
     uint32_t* out_minutes) {
-    if(!app || app->selected_asset < 0 ||
-       (uint8_t)app->selected_asset >= app->asset_count) {
+    if(!asset || asset->clock_in_ts == 0 || asset->clock_out_ts <= asset->clock_in_ts) {
         return false;
     }
-
-    const Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    if(asset->clock_in_ts == 0 || asset->clock_out_ts <= asset->clock_in_ts) {
-        return false;
-    }
-
     uint32_t elapsed = asset->clock_out_ts - asset->clock_in_ts;
     if(out_hours) *out_hours = elapsed / 3600U;
     if(out_minutes) *out_minutes = (elapsed % 3600U) / 60U;
     return true;
-
 }
 
                                                                                         /*  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% */
@@ -511,9 +507,11 @@ static bool write_asset_database(MaintenanceApp* app) {//-----------------------
             int length = snprintf(
                 line,
                 sizeof(line),
-                "%lu\t%lu\t%s\t%s\n",
+                "%lu\t%lu\t%lu\t%lu\t%s\t%s\n",
                 (unsigned long)asset->id,
-                (unsigned long)asset->datetime,
+                (unsigned long)asset->log_date,
+                (unsigned long)asset->clock_in_ts,
+                (unsigned long)asset->clock_out_ts,
                 asset->last_service,
                 asset->name);
             if((length < 0) || ((size_t)length >= sizeof(line)) ||
@@ -530,19 +528,17 @@ static bool write_asset_database(MaintenanceApp* app) {//-----------------------
     return success;
 }
 
-// Parses one database row, retaining available fields and defaulting missing ones.
-static void parse_asset_line(MaintenanceApp* app, char* line) {//------------------------------------------------------//
+static void parse_asset_line(MaintenanceApp* app, char* line) {
     if((app->asset_count >= ASSET_LIMIT) || !line) return;
 
     Asset* asset = &app->assets[app->asset_count];
-    // Reset the full record so absent or truncated TSV columns cannot reuse stale bytes.
     memset(asset, 0, sizeof(*asset));
     snprintf(asset->name, sizeof(asset->name), "%s", "Unnamed Asset");
     snprintf(asset->last_service, sizeof(asset->last_service), "%s", "Never");
 
     char* id_text = line;
-    char* seconds_text = strchr(id_text, '\t');
-    if(seconds_text) *seconds_text++ = '\0';
+    char* log_date_text = strchr(id_text, '\t');
+    if(log_date_text) *log_date_text++ = '\0';
     id_text[strcspn(id_text, "\r\n")] = '\0';
 
     char* end = NULL;
@@ -551,28 +547,37 @@ static void parse_asset_line(MaintenanceApp* app, char* line) {//---------------
         asset->id = (uint32_t)id;
     }
 
-    if(seconds_text) {
-        char* date_text = strchr(seconds_text, '\t');
-        if(date_text) *date_text++ = '\0';
-        seconds_text[strcspn(seconds_text, "\r\n")] = '\0';
+    if(log_date_text) {
+        char* clock_in_text = strchr(log_date_text, '\t');
+        if(clock_in_text) *clock_in_text++ = '\0';
+        log_date_text[strcspn(log_date_text, "\r\n")] = '\0';
+        asset->log_date = (uint32_t)strtoul(log_date_text, NULL, 10);
 
-        unsigned long seconds = strtoul(seconds_text, &end, 10);
-        if((end != seconds_text) && (*end == '\0') && (seconds <= UINT32_MAX)) {
-            asset->lifetime_seconds = (uint32_t)seconds;
-        }
+        if(clock_in_text) {
+            char* clock_out_text = strchr(clock_in_text, '\t');
+            if(clock_out_text) *clock_out_text++ = '\0';
+            clock_in_text[strcspn(clock_in_text, "\r\n")] = '\0';
+            asset->clock_in_ts = (uint32_t)strtoul(clock_in_text, NULL, 10);
 
-        if(date_text) {
-            char* name_text = strchr(date_text, '\t');
-            if(name_text) *name_text++ = '\0';
-            date_text[strcspn(date_text, "\r\n")] = '\0';
-            if(date_text[0]) {
-                snprintf(asset->last_service, sizeof(asset->last_service), "%s", date_text);
-            }
+            if(clock_out_text) {
+                char* date_text = strchr(clock_out_text, '\t');
+                if(date_text) *date_text++ = '\0';
+                clock_out_text[strcspn(clock_out_text, "\r\n")] = '\0';
+                asset->clock_out_ts = (uint32_t)strtoul(clock_out_text, NULL, 10);
 
-            if(name_text) {
-                name_text[strcspn(name_text, "\r\n")] = '\0';
-                if(name_text[0]) {
-                    snprintf(asset->name, sizeof(asset->name), "%s", name_text);
+                if(date_text) {
+                    char* name_text = strchr(date_text, '\t');
+                    if(name_text) *name_text++ = '\0';
+                    date_text[strcspn(date_text, "\r\n")] = '\0';
+                    if(date_text) {
+                        snprintf(asset->last_service, sizeof(asset->last_service), "%s", date_text);
+                    }
+                    if(name_text) {
+                        name_text[strcspn(name_text, "\r\n")] = '\0';
+                        if(name_text) {
+                            snprintf(asset->name, sizeof(asset->name), "%s", name_text);
+                        }
+                    }
                 }
             }
         }
@@ -629,21 +634,16 @@ static bool load_assets(MaintenanceApp* app) {  //------------------------------
 /* ls */
 //*****  LOAD  SERVICES  *****/
 //************************************************/ Resets the service list to defaults, then appends this asset's custom entries.
-static void load_services(MaintenanceApp* app) {  //------------------------------------------------------//
-    // Clear all slots before rebuilding the active checklist.
-    memset(app->services, 0, sizeof(app->services));                //memset(destination, value, byte_count)
-    app->service_count = 0;                                         //char services[SERVICE_LIMIT][SERVICE_NAME_SIZE];
-    
-    for(uint8_t i = 0; (app->service_count < SERVICE_LIMIT); i++) {                                     //(i < standard_service_count) && (app->service_count < SERVICE_LIMIT); i++) {
-        snprintf(app->services[i], SERVICE_NAME_SIZE, "%s", service_count[i]);
-        app->service_count++;
-    }
+// Resets the service list, then loads this asset's custom entries from <id>.svc.
+static void load_services(MaintenanceApp* app) {
+    memset(app->services, 0, sizeof(app->services));
+    app->service_count = 0;
 
     if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
        ((uint8_t)app->selected_asset >= app->asset_count)) {
         app->selected_asset = -1;
-       return;
-    } 
+        return;
+    }
 
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char path[64];
@@ -698,7 +698,6 @@ static void load_services(MaintenanceApp* app) {  //----------------------------
     storage_file_close(file);
     storage_file_free(file);
 }
-//**-------------------------------------*****/
 
 /* s_n */
 // Appends a user-defined service name to the selected asset's service file.
@@ -725,8 +724,7 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {  /
 
 /*slog*/
 // Appends the selected maintenance items and uptime timestamp to the asset log.
-    static bool append_service_log(MaintenanceApp* app) {
-    // 1. Safety guard: verify at least one service checkbox is checked before writing anything
+ static bool append_service_log(MaintenanceApp* app) {
     bool any_checked = false;
     for(uint8_t i = 0; i < app->service_count; i++) {
         if(app->service_checked[i]) {
@@ -737,47 +735,34 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {  /
     if(!any_checked) return false;
 
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
-    char path[64];
+    char path;
     asset_log_path(asset, path, sizeof(path));
 
-    // 2. Pull live date & time from Flipper's hardware RTC
-    DateTime dt;
-    furi_hal_rtc_get_datetime(&dt);
-
     char date_str[DATE_SIZE];
-    snprintf(
-        date_str,
-        sizeof(date_str),
-        "%02u.%02u.%02u",
-        dt.month,
-        dt.day,
-        (uint16_t)(dt.year % 100U)); // e.g. "11.26.26"
+    get_rtc_date(date_str, sizeof(date_str));
+
+    uint32_t hours = 0, minutes = 0;
+    bool has_clock_duration = calc_asset_clock_duration(asset, &hours, &minutes);
 
     File* file = storage_file_alloc(app->storage);
     bool success = false;
 
     if(storage_file_open(file, path, FSAM_WRITE, FSOM_OPEN_APPEND)) {
-        char line[256];
+        char line;
         int length = 0;
 
-        // 3. ALWAYS write RTC date; ONLY append HH:MM when Clock In / Clock Out is selected!
-        if(app->clock_in_out_active) {
+        if(has_clock_duration) {
             length = snprintf(
                 line,
                 sizeof(line),
-                "%s %02u:%02u | ",
+                "%s (%luh %02lum) | ",
                 date_str,
-                dt.hour,
-                dt.minute); // e.g. "11.26.26 13:04 | "
+                (unsigned long)hours,
+                (unsigned long)minutes);
         } else {
-            length = snprintf(
-                line,
-                sizeof(line),
-                "%s | ",
-                date_str); // e.g. "11.26.26 | "
+            length = snprintf(line, sizeof(line), "%s | ", date_str);
         }
 
-        // 4. Append all checked service items separated by ", "
         bool first_item = true;
         for(uint8_t i = 0; (i < app->service_count) && (length > 0) &&
                            ((size_t)length < sizeof(line) - 2);
@@ -798,7 +783,6 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {  /
             }
         }
 
-        // 5. Write line + newline to <id>.txt log file
         if(length > 0) {
             if((size_t)length < sizeof(line) - 1) line[length++] = '\n';
             success = storage_file_write(file, line, (uint16_t)length) == (uint16_t)length;
@@ -809,16 +793,18 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {  /
     }
     storage_file_free(file);
 
-    // 6. Update asset's last_service date in RAM & save to asset database on SD card!
     if(success) {
         snprintf(asset->last_service, sizeof(asset->last_service), "%s", date_str);
         asset->log_date = furi_hal_rtc_get_timestamp();
+        if(has_clock_duration) {
+            asset->clock_in_ts = 0;
+            asset->clock_out_ts = 0;
+        }
         write_asset_database(app);
     }
 
     return success;
 }
-
 
 // Adds a uniquely numbered asset and persists it, rolling back if saving fails.
 static bool add_asset(MaintenanceApp* app, const char* name) {  //------------------------------------------------------//
@@ -841,14 +827,15 @@ static bool add_asset(MaintenanceApp* app, const char* name) {  //--------------
 }
 
 // Builds the compact web URI containing lifetime hours and an optional service bitmask.
-static bool build_service_uri( //------------------------------------------------------//
+static bool build_service_uri(
     MaintenanceApp* app,
     char* buffer,
     size_t size,
     bool include_services) {
+    const Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     uint32_t hours = 0, minutes = 0;
-    calc_clock_duration(app, &hours, &minutes);
-    // uint32_t mask = 0;
+    calc_asset_clock_duration(asset, &hours, &minutes);
+    uint32_t mask = 0;
     if(include_services) {
         for(uint8_t i = 0; i < app->service_count; i++) {
             if(app->service_checked[i]) mask |= 1U << i;
@@ -857,9 +844,9 @@ static bool build_service_uri( //-----------------------------------------------
     int length = snprintf(
         buffer,
         size,
-        "https://m.io/?h=%lu&s=%04lx",
+        "https://m.io",
         (unsigned long)hours,
-        (unsigned long)minutes);
+        (unsigned long)mask);
     return (length > 0) && ((size_t)length < size);
 }
 
