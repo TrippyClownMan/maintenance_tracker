@@ -170,7 +170,7 @@ static void text_input_callback(void* context);
 static void profile_menu_callback(void* context, uint32_t index);
 static void rebuild_profile_menu(MaintenanceApp* app);
 // Displays a notice and records where the user should return when it is dismissed.
-static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
+/*static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
     snprintf(app->notice, sizeof(app->notice), "%s", message);
     app->notice_dismiss_exits = exits;
     app->notice_return_view = app->current_view;
@@ -180,6 +180,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
     }
     switch_view(app, ViewNotice);
 }
+*/
 static bool tracker_input(InputEvent* event, void* context);
 
 // Returns the shared SD-card path for the asset database.
@@ -859,7 +860,7 @@ static bool build_service_uri(
     int length = snprintf(
         buffer,
         size,
-       // "https://m.io",
+       "https://m.io",
         (unsigned long)hours,
         (unsigned long)mask);
     return (length > 0) && ((size_t)length < size);
@@ -895,7 +896,7 @@ static bool encode_uri_ndef(  //------------------------------------------------
 }
 
 // Reads the tag after writing and saves its protocol data as a Flipper NFC file.
-/*static bool save_nfc_snapshot(MaintenanceApp* app, Nfc* nfc) {
+static bool save_nfc_snapshot(MaintenanceApp* app, Nfc* nfc) {
     MfUltralightData* tag_data = mf_ultralight_alloc();
     bool saved = false;
     if(mf_ultralight_poller_sync_read_card(nfc, tag_data, NULL) == MfUltralightErrorNone) {
@@ -1139,7 +1140,7 @@ static void draw_tracker(Canvas* canvas, void* context) {
         canvas_draw_str(canvas, 3, 47, total);
         canvas_draw_str(canvas, 3, 58, "OK: scan tag to clock in");
     }
-}                                                                               */
+}                                                                               
 
 // Scans a tag when OK is pressed; Back returns to the selected asset profile.
 static bool tracker_input(InputEvent* event, void* context) {  //------------------------------------------------------//
@@ -1273,7 +1274,7 @@ static void draw_checklist(Canvas* canvas, void* context) { //------------------
 }
 
 
-//  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1 \\
+//  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1 
 //               DRAW SERVICE LIST     *** DONT DRAW.. NEED FUNCTION INPUT ONTO PROFILE MENU ***                        
 
 
@@ -1405,7 +1406,7 @@ static bool checklist_input(InputEvent* event, void* context) {
             &app->assets[(uint8_t)app->selected_asset] :
             NULL;
 
-    }
+    
 
     // 1. Hold Right opens right-side menu (populated based on whether checkboxes are active!)
     if(event->key == InputKeyRight && event->type == InputTypeLong) {
@@ -1497,7 +1498,7 @@ static bool checklist_input(InputEvent* event, void* context) {
                     asset_log_path(asset, path, sizeof(path));
                     File* file = storage_file_alloc(app->storage);
                     size_t used = 0;
-                    app->history = '\0';
+                    app->history[0] = '\0';
                     if(storage_file_open(file, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
                         while((used + 1 < sizeof(app->history)) && !storage_file_eof(file)) {
                             uint16_t read = storage_file_read(
@@ -1630,6 +1631,7 @@ static void main_menu_callback(void* context, uint32_t index) {  //-------------
 
 }
 */
+static void text_input_callback(void* context) {
     if((app->input_buffer[0] == '\0') ||
        (strchr(app->input_buffer, '\t') != NULL) ||
        (strchr(app->input_buffer, '\n') != NULL) ||
@@ -1657,7 +1659,7 @@ static void main_menu_callback(void* context, uint32_t index) {  //-------------
             show_notice(app, "Service list is full", false);
         } else if(append_custom_service(app, app->input_buffer)) {
             load_services(app);
-            view_commit_model(app_>checklist_view, true);
+            view_commit_model(app->checklist_view, true);
             //rebuild_profile_menu(app);
             switch_view(app, ViewChecklist);
         } else {
@@ -1725,10 +1727,12 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
             sizeof(app->input_buffer),
             true);
         switch_view(app, ViewInput);
-    //} else if(index == 3) {
+    } else if(index == 3) {
     //    switch_view(app, ViewTracker);
     //} else if(index == 4) {
-    //    show_payload(app, false);
+        show_payload(app, false);
+    }
+
 
     if(app->show_popup) {                                                   /*MENU POP-UP*/
     // 1. White background box (clears underlying list text)
@@ -1745,7 +1749,7 @@ static void profile_menu_callback(void* context, uint32_t index) {  //----------
         // Draw an 'X' (or solid fill) inside the checkbox when checked
         canvas_draw_line(canvas, 22, 22, 29, 29);
         canvas_draw_line(canvas, 29, 22, 22, 29);
-*/  
+  
     } 
     // 4. Label & controls hint
     canvas_set_font(canvas, FontSecondary);
