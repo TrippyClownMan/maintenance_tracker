@@ -198,17 +198,25 @@ static bool has_any_service_checked(const MaintenanceApp* app) {
 }
 
 
-static bool calc_asset_clock_duration(const MaintenanceApp* app) 
-    const Asset* asset,
+static bool calc_asset_clock_duration(
+    const MaintenanceApp* app,
     uint32_t* out_hours,
     uint32_t* out_minutes) {
-    if(!asset || asset->clock_in_ts == 0 || asset->clock_out_ts <= asset->clock_in_ts) {
+    if(!app || app->selected_asset < 0 ||
+       (uint8_t)app->selected_asset >= app->asset_count) {
         return false;
     }
+
+    const Asset* asset = &app->assets[(uint8_t)app->selected_asset];
+    if(asset->clock_in_ts == 0 || asset->clock_out_ts <= asset->clock_in_ts) {
+        return false;
+    }
+
     uint32_t elapsed = asset->clock_out_ts - asset->clock_in_ts;
     if(out_hours) *out_hours = elapsed / 3600U;
     if(out_minutes) *out_minutes = (elapsed % 3600U) / 60U;
     return true;
+
 }
 
                                                                                         /*  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% */
