@@ -175,17 +175,17 @@ static void text_input_callback(void* context);
 static bool tracker_input(InputEvent* event, void* context);
 
 // Returns the shared SD-card path for the asset database.
-static const char* asset_db_path(void) {//------------------------------------------------------//
+static const char* asset_db_path(void) {
     return APP_DATA_PATH("assets.tsv");
 }
 
 // Builds a stable per-asset path for its maintenance history.
-static void asset_log_path(const Asset* asset, char* path, size_t size) {//------------------------------------------------------//
+static void asset_log_path(const Asset* asset, char* path, size_t size) {
     snprintf(path, size, APP_DATA_PATH("%lu.txt"), (unsigned long)asset->id);
 }
 
 // Builds a stable per-asset path for its custom service list.
-static void asset_services_path(const Asset* asset, char* path, size_t size) {//------------------------------------------------------//
+static void asset_services_path(const Asset* asset, char* path, size_t size) {
     snprintf(path, size, APP_DATA_PATH("%lu.svc"), (unsigned long)asset->id);
 }
 
@@ -299,21 +299,21 @@ static void load_quick_log(MaintenanceApp* app) {
 
 
 // Builds the path where a scanned and written NFC tag snapshot is stored.
-static void asset_nfc_path(const Asset* asset, char* path, size_t size) {//------------------------------------------------------//
+static void asset_nfc_path(const Asset* asset, char* path, size_t size) {
     snprintf(path, size, APP_DATA_PATH("%lu.nfc"), (unsigned long)asset->id);
 }
 // Updates the active view and keeps the current-view state in sync for callbacks.
-static void switch_view(MaintenanceApp* app, MaintenanceViewId view_id) {//------------------------------------------------------//
+static void switch_view(MaintenanceApp* app, MaintenanceViewId view_id) {
     app->current_view = view_id;
     view_dispatcher_switch_to_view(app->dispatcher, view_id);
 }
 // Formats the current device uptime as a short timestamp (not wall-clock time).
-/*static void format_uptime(char timestamp[DATE_SIZE]) {//------------------------------------------------------//
+/*static void format_uptime(char timestamp[DATE_SIZE]) {
     uint32_t seconds = furi_get_tick() / furi_kernel_get_tick_frequency();
     snprintf(timestamp, DATE_SIZE, "T+%lus", (unsigned long)seconds);
 }*/
 // Ensures the app's SD-card data directory exists before files are accessed.
-static bool ensure_data_directory(MaintenanceApp* app) {//------------------------------------------------------//
+static bool ensure_data_directory(MaintenanceApp* app) {
     FS_Error error = storage_common_mkdir(app->storage, "/ext/apps_data/maintenance_tracker");
     if((error != FSE_OK) && (error != FSE_EXIST)) {
         FURI_LOG_E(TAG, "Cannot create app data directory: %s", filesystem_api_error_get_desc(error));
@@ -404,7 +404,7 @@ static void restore_tracker_log_line(MaintenanceApp* app, char* line) {         
 }
 
 // Restores the lifetime runtime and any unfinished session from the event log.
-static bool load_tracker_total(MaintenanceApp* app) {//------------------------------------------------------//
+static bool load_tracker_total(MaintenanceApp* app) {
     File* file = storage_file_alloc(app->storage);
     if(!storage_file_open(file, TRACKER_LOG_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
         FURI_LOG_E(TAG, "Cannot read clock-in/out log");
@@ -506,7 +506,7 @@ ________________________________________________________________________________
 
 
 
-static bool write_asset_database(MaintenanceApp* app) {//------------------------------------------------------//
+static bool write_asset_database(MaintenanceApp* app) {
     File* file = storage_file_alloc(app->storage);
     bool success = false;
     if(storage_file_open(file, asset_db_path(), FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
@@ -599,7 +599,7 @@ static void parse_asset_line(MaintenanceApp* app, char* line) {
 }
 
 // Loads asset records from SD, creating an empty database on first launch.
-static bool load_assets(MaintenanceApp* app) {  //------------------------------------------------------//
+static bool load_assets(MaintenanceApp* app) {  
     app->asset_count = 0;
     File* file = storage_file_alloc(app->storage);
     if(!storage_file_open(file, asset_db_path(), FSAM_READ, FSOM_OPEN_EXISTING)) {
@@ -712,7 +712,7 @@ static void load_services(MaintenanceApp* app) {
 
 /* s_n */
 // Appends a user-defined service name to the selected asset's service file.
-static bool append_custom_service(MaintenanceApp* app, const char* service) {  //------------------------------------------------------//
+static bool append_custom_service(MaintenanceApp* app, const char* service) {  
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char path[64];
     asset_services_path(asset, path, sizeof(path));
@@ -818,7 +818,7 @@ static bool append_custom_service(MaintenanceApp* app, const char* service) {  /
 }
 
 // Adds a uniquely numbered asset and persists it, rolling back if saving fails.
-static bool add_asset(MaintenanceApp* app, const char* name) {  //------------------------------------------------------//
+static bool add_asset(MaintenanceApp* app, const char* name) {  
     if(app->asset_count >= ASSET_LIMIT) return false;
     Asset* asset = &app->assets[app->asset_count];
     memset(asset, 0, sizeof(*asset));
@@ -862,7 +862,7 @@ static bool build_service_uri(
 }
 
 // Encodes an https URI as an NFC Forum Type 2 NDEF message with a URI record.
-static bool encode_uri_ndef(  //------------------------------------------------------//
+static bool encode_uri_ndef(  
     const char* uri,
     uint8_t* buffer,
     size_t buffer_size,
@@ -1138,7 +1138,7 @@ static void draw_tracker(Canvas* canvas, void* context) {
 }                                                                               
 
 // Scans a tag when OK is pressed; Back returns to the selected asset profile.
-static bool tracker_input(InputEvent* event, void* context) {  //------------------------------------------------------//
+static bool tracker_input(InputEvent* event, void* context) {  
     MaintenanceApp* app = context;
     if(event->type != InputTypeShort) return false;
     if(event->key == InputKeyBack) {
@@ -1158,7 +1158,7 @@ static bool tracker_input(InputEvent* event, void* context) {  //---------------
 
 
 // Draws the scrollable equipment selector and the selected asset's last-service date.
-static void draw_equipment(Canvas* canvas, void* context) {  //------------------------------------------------------//
+static void draw_equipment(Canvas* canvas, void* context) {  
     MaintenanceApp* app = *(MaintenanceApp**)context;
     if(!app) return;                                         // %%%%%%%%%%% REMOVE [LAST SERVICE] %%%%%%%%%%%%%% //          //%%%%%%%%%%%%%%%%%%%%%  DRAW _ EQUIPTMENT  %%%%%%%%%%%%%%%%//
 
@@ -1166,18 +1166,15 @@ static void draw_equipment(Canvas* canvas, void* context) {  //-----------------
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 10, "Equipment");
 
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 63, 8, "Item");
+    canvas_draw_str(canvas, 97, 8, "Last");
     canvas_draw_rframe(canvas, 55, 1, 68, 63, 3);
     canvas_draw_line(canvas, 92, 42, 92, 14);
-    canvas_draw_line(canvas, 63, 9, 87, 9);
-    canvas_draw_line(canvas, 96, 9, 120, 9);
-
-    canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 67, 26, "Last Serviced");
+    canvas_draw_line(canvas, 63, 10, 87, 10);
+    canvas_draw_line(canvas, 96, 10, 120, 10);
     canvas_draw_str(canvas, 67, 34, app->preview_date);  // e.g. "11.25.26"
     canvas_draw_str(canvas, 67, 43, app->preview_items); // e.g. "Oil, Filter"
-
-    canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 2, 62, "Up/Down  OK: open");
 
 
     if(app->asset_count > ASSET_LIMIT) app->asset_count = ASSET_LIMIT;
@@ -1226,25 +1223,25 @@ static void draw_equipment(Canvas* canvas, void* context) {  //-----------------
 }
 
 // Draws the service checklist, selection state, and final write action.
-static void draw_checklist(Canvas* canvas, void* context) { //------------------------------------------------------//
+static void draw_checklist(Canvas* canvas, void* context) { 
     MaintenanceApp* app = *(MaintenanceApp**)context;            // app = context;
     if(!app) return;                                                //***************************** */
     
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 10, 9, "Service List");  //**!**// 'checklist'->'List'
+    canvas_draw_str(canvas, 4, 9, "Service List"); 
 
     uint8_t item_count = app->service_count + 1U;
     uint8_t first = app->checklist_selection >= 2 ? app->checklist_selection - 1U : 0U;
 
-    for(uint8_t row = 0U; (row < 4U) && ((first + row) < item_count); row++) {                    //(row < 4) && ((first + row)
-        uint8_t index = first + row;                                                  //uint8_t index = first + row;
+    for(uint8_t row = 0U; (row < 4U) && ((first + row) < item_count); row++) {         
+        uint8_t index = first + row;                                                 
         uint8_t y = 22 + row * 10;
         bool selected = index == app->checklist_selection;
         
         if(selected) {
             canvas_set_color(canvas, ColorBlack);
-            canvas_draw_box(canvas, 0, y - 8, 62, 10);
+            canvas_draw_box(canvas, 0, y - 4, 58, 10);
             canvas_set_color(canvas, ColorWhite);
         } else {
             canvas_set_color(canvas, ColorBlack);
@@ -1259,13 +1256,13 @@ static void draw_checklist(Canvas* canvas, void* context) { //------------------
                 app->service_checked[index] ? "[x]" : "[ ]",
                 app->services[index]);
             canvas_draw_str(canvas, 3, y, line);
+
         } else {
             canvas_draw_str(canvas, 3, y, "NFC Tag(s)");
         }
         canvas_set_color(canvas, ColorBlack);
     }
-    canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 2, 62, "OK: toggle/write  Back");
+    
 }
 
 
@@ -1331,80 +1328,6 @@ static bool equipment_input(InputEvent* event, void* context) {  //-------------
 
 
 
-
-
-
-
-
-
-//* Toggles service selections, saves the log once, and retries NFC writing as needed.
-//* OG --- OG --- OG --- OG --- 
-/*static bool checklist_input(InputEvent* event, void* context) {  //------------------------------------------------------//
-    MaintenanceApp* app = *(MaintenanceApp**)context;                   // app = context 
-
-    if(event->type != InputTypeShort) return false;
-    uint8_t item_count = app->service_count + 1U;
-
-    if(event->key == InputKeyUp) {
-        if(app->checklist_selection > 0) app->checklist_selection--;
-        view_commit_model(app->checklist_view, true);
-        return true;
-    }
-    if(event->key == InputKeyDown) {
-        if(app->checklist_selection + 1U < item_count) app->checklist_selection++;
-        view_commit_model(app->checklist_view, true);
-        return true;
-    }
-    if(event->key == InputKeyOk) {
-        if(app->checklist_selection < app->service_count) {
-            if(app->checklist_log_saved) {
-                show_notice(app, "Log saved; retry NFC or go Back", false);
-                return true;
-            }
-            app->service_checked[app->checklist_selection] =
-                !app->service_checked[app->checklist_selection];
-            view_commit_model(app->checklist_view, true);
-        } else {
-            bool selected_any = false;
-            for(uint8_t i = 0; i < app->service_count; i++) {
-                selected_any |= app->service_checked[i];
-            }
-            if(!selected_any) {
-                show_notice(app, "Select a service first", false);
-                return true;
-            }
-            if(!app->checklist_log_saved) {
-                if(!append_service_log(app)) {
-                    show_notice(app, "Could not save SD log", false);
-                    return true;
-                }
-                app->checklist_log_saved = true;
-            }
-            format_uptime(app->assets[(uint8_t)app->selected_asset].last_service);
-            if(!write_asset_database(app)) {
-                FURI_LOG_E(TAG, "Could not update asset database");
-            }
-            if(show_payload(app, true)) app->checklist_log_saved = false;
-        }
-        return true;
-    }
-    return false;
-}   
-*/
-/*
-static bool checklist_input(InputEvent* event, void* context) {
-    MaintenanceApp* app = context;
-
-    // 1. If the right-side pop-up box is open, Back/OK closes it
-    if(app->show_textbox) {
-        if(event->type == InputTypeShort &&
-           (event->key == InputKeyBack || event->key == InputKeyOk)) {
-            app->show_textbox = false;                  // Close right-side box
-            view_commit_model(app->checklist, true);    // Redraw checklist without box
-        }
-        return true;
-    }
-*/
 static bool checklist_input(InputEvent* event, void* context) {
     MaintenanceApp* app = context;
     Asset* asset =
@@ -1500,7 +1423,7 @@ static bool checklist_input(InputEvent* event, void* context) {
                         true);
                     switch_view(app, ViewInput);
                 } else if(app->right_menu_selection == 2 && asset) {
-                    char path[PATH_SIZE];;
+                    char path[PATH_SIZE];
                     asset_log_path(asset, path, sizeof(path));
                     File* file = storage_file_alloc(app->storage);
                     size_t used = 0;
@@ -1526,7 +1449,7 @@ static bool checklist_input(InputEvent* event, void* context) {
             }
             return true;
         }
-        return true;
+        return false;
     }
 
     // 3. Normal Left-Side Checklist Controls
@@ -1560,7 +1483,7 @@ static bool checklist_input(InputEvent* event, void* context) {
 
 
 // Dismisses a notice and restores its recorded return view.
-static bool notice_input(InputEvent* event, void* context) {  //------------------------------------------------------//
+static bool notice_input(InputEvent* event, void* context) {  
     MaintenanceApp* app = context;
     if((event->type != InputTypeShort) || (event->key != InputKeyOk)) return false;
     if(app->notice_dismiss_exits) {
@@ -1572,7 +1495,7 @@ static bool notice_input(InputEvent* event, void* context) {  //----------------
 }
 
 // Displays a notice and records where the user should return when it is dismissed.
-static void show_notice(MaintenanceApp* app, const char* message, bool exits) {  //------------------------------------------------------//
+static void show_notice(MaintenanceApp* app, const char* message, bool exits) {  
     snprintf(app->notice, sizeof(app->notice), "%s", message);
     app->notice_dismiss_exits = exits;
     app->notice_return_view = app->current_view;
@@ -1584,7 +1507,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) { 
 }
 
 // Rebuilds the selected asset menu with its clock-tracking action.
-/*static void rebuild_profile_menu(MaintenanceApp* app) {  //------------------------------------------------------// 
+/*static void rebuild_profile_menu(MaintenanceApp* app) {   
     submenu_reset(app->profile_menu);
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char header[64];
@@ -1597,7 +1520,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) { 
 }*/
 
 // Routes main-menu selections to equipment browsing or new-asset input.
-static void main_menu_callback(void* context, uint32_t index) {  //------------------------------------------------------//
+static void main_menu_callback(void* context, uint32_t index) {  
     MaintenanceApp* app = context;                                                                              
     if(index == 0) {
         app->selected_asset = app->asset_count ? 0 : -1;
@@ -1621,7 +1544,7 @@ static void main_menu_callback(void* context, uint32_t index) {  //-------------
 }
 
 // Validates text input, then creates an asset or appends a custom service.
-/*static void text_input_callback(void* context) {  //------------------------------------------------------//    
+/*static void text_input_callback(void* context) {      
     MaintenanceApp* app = context;
     //if(app->show_popup) {
     if(event->type == InputTypeShort) {
@@ -1677,7 +1600,7 @@ static void text_input_callback(void* context) {
 
 // Handles profile actions: history, checklist, custom service, clock tracking, and NFC write.
 // profile call
-/*static void profile_menu_callback(void* context, uint32_t index) {  //------------------------------------------------------//  
+/*static void profile_menu_callback(void* context, uint32_t index) {    
     MaintenanceApp* app = context;
     if((app->selected_asset < 0) || (app->asset_count > ASSET_LIMIT) ||
        ((uint8_t)app->selected_asset >= app->asset_count)) {
@@ -1769,7 +1692,7 @@ static void text_input_callback(void* context) {
 //Service callback
 
 // Implements Back navigation and prevents exiting with an unfinished clocked-in session.
-static bool navigation_callback(void* context) {  //------------------------------------------------------//    
+static bool navigation_callback(void* context) {      
     MaintenanceApp* app = context;
     uint32_t current = app->current_view;
     if(current == ViewMain) {
