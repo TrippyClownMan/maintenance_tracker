@@ -1780,8 +1780,8 @@ static bool navigation_callback(void* context) {  //----------------------------
         app->checklist_log_saved = false;
         load_quick_log(app);
         switch_view(app, ViewEquipment);
-    //} else if(current == ViewTracker) {
-    //    switch_view(app, ViewProfile);
+    } else if(current == ViewTracker) {
+        switch_view(app, ViewProfile);
     } else if(current == ViewInput) {
         switch_view(app, app->input_kind == InputNewAsset ? ViewMain : ViewChecklist);
     } else if(current == ViewNotice) {
