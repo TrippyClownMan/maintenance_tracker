@@ -167,8 +167,8 @@ typedef struct {
 
 static void show_notice(MaintenanceApp* app, const char* message, bool exits);
 static void text_input_callback(void* context);
-static void profile_menu_callback(void* context, uint32_t index);
-static void rebuild_profile_menu(MaintenanceApp* app);
+//static void profile_menu_callback(void* context, uint32_t index);
+//static void rebuild_profile_menu(MaintenanceApp* app);
 // Displays a notice and records where the user should return when it is dismissed.
 
  
@@ -1581,7 +1581,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
 }
 
 // Rebuilds the selected asset menu with its clock-tracking action.
-static void rebuild_profile_menu(MaintenanceApp* app) {   
+/*static void rebuild_profile_menu(MaintenanceApp* app) {   
     submenu_reset(app->profile_menu);
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char header[64];
@@ -1591,7 +1591,7 @@ static void rebuild_profile_menu(MaintenanceApp* app) {
     submenu_add_item(app->profile_menu, "Maintenance Records", 1, profile_menu_callback, app);     // Changed name from "view history/Log \\//"
     submenu_add_item(app->profile_menu, "Add Service", 2, profile_menu_callback, app);
     submenu_add_item(app->profile_menu, "NFC Tag(s)", 3, profile_menu_callback, app);
-}
+}*/
 
 // Routes main-menu selections to equipment browsing or new-asset input.
 static void main_menu_callback(void* context, uint32_t index) {  
@@ -1664,7 +1664,7 @@ static void text_input_callback(void* context) {
         } else if(append_custom_service(app, app->input_buffer)) {
             load_services(app);
             view_commit_model(app->checklist_view, true);
-            rebuild_profile_menu(app);
+            //rebuild_profile_menu(app);
             switch_view(app, ViewChecklist);
         } else {
             show_notice(app, "Could not save service", false);
