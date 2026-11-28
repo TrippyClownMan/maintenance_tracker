@@ -1311,19 +1311,18 @@ static bool equipment_input(InputEvent* event, void* context) {  //-------------
         return true;
     }
     if(event->key == InputKeyOk) {
+        if(app->asset_count == 0 || app->selected_asset < 0) return true;
         memset(app->service_checked, 0, sizeof(app->service_checked));
         memset(app->services, 0, sizeof(app->services));
         app->checklist_log_saved = false;
-        app->checklist_selection = 0; // Starts cursor on 1st item (#0)
+        app->checklist_selection = 0;
         app->service_count = 0;
-        //app->checklist_right_open = false;
+        app->checklist_right_open = false;
         load_services(app);
         view_commit_model(app->checklist_view, true);
-        switch_view(app, ViewChecklist); // Jump straight to Checklist
-        }
+        switch_view(app, ViewChecklist);
         return true;
     }
-    return false;
 }
 
 //* Toggles service selections, saves the log once, and retries NFC writing as needed.
@@ -1780,8 +1779,8 @@ static bool navigation_callback(void* context) {  //----------------------------
         app->checklist_log_saved = false;
         load_quick_log(app);
         switch_view(app, ViewEquipment);
-    } else if(current == ViewTracker) {
-        switch_view(app, ViewProfile);
+    //} else if(current == ViewTracker) {
+    //    switch_view(app, ViewProfile);
     } else if(current == ViewInput) {
         switch_view(app, app->input_kind == InputNewAsset ? ViewMain : ViewChecklist);
     } else if(current == ViewNotice) {
