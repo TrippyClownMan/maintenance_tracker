@@ -1310,7 +1310,7 @@ static bool equipment_input(InputEvent* event, void* context) {  //-------------
         view_commit_model(app->equipment_view, true); //refreshes screen each scroll
         return true;
     }
-    if(event->key == InputKeyOk) {
+if(event->key == InputKeyOk) {
         if(app->asset_count == 0 || app->selected_asset < 0) return true;
         memset(app->service_checked, 0, sizeof(app->service_checked));
         memset(app->services, 0, sizeof(app->services));
@@ -1323,7 +1323,17 @@ static bool equipment_input(InputEvent* event, void* context) {  //-------------
         switch_view(app, ViewChecklist);
         return true;
     }
+    return false;
 }
+
+
+
+
+
+
+
+
+
 
 //* Toggles service selections, saves the log once, and retries NFC writing as needed.
 //* OG --- OG --- OG --- OG --- 
