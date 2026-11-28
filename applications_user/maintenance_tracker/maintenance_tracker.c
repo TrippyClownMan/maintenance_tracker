@@ -167,8 +167,8 @@ typedef struct {
 
 static void show_notice(MaintenanceApp* app, const char* message, bool exits);
 static void text_input_callback(void* context);
-//static void profile_menu_callback(void* context, uint32_t index);
-//static void rebuild_profile_menu(MaintenanceApp* app);
+static void profile_menu_callback(void* context, uint32_t index);
+static void rebuild_profile_menu(MaintenanceApp* app);
 // Displays a notice and records where the user should return when it is dismissed.
 
  
@@ -1223,31 +1223,35 @@ static void draw_equipment(Canvas* canvas, void* context) {
 }
 
 // Draws the service checklist, selection state, and final write action.
-static void draw_checklist(Canvas* canvas, void* context) { 
-    MaintenanceApp* app = *(MaintenanceApp**)context;            // app = context;
-    if(!app) return;                                                //***************************** */
-    
+static void draw_checklist(Canvas* canvas, void* context) {
+    MaintenanceApp* app = *(MaintenanceApp**)context;
+    if(!app) return;
+
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 9, "Service List"); 
+    canvas_draw_str(canvas, 2, 10, "Services");
 
-    uint8_t item_count = app->service_count + 1U;
-    uint8_t first = app->checklist_selection >= 2 ? app->checklist_selection - 1U : 0U;
-
-    for(uint8_t row = 0U; (row < 4U) && ((first + row) < item_count); row++) {         
-        uint8_t index = first + row;                                                 
-        uint8_t y = 22 + row * 10;
-        bool selected = index == app->checklist_selection;
-        
-        if(selected) {
-            canvas_set_color(canvas, ColorBlack);
-            canvas_draw_box(canvas, 0, y - 4, 58, 10);
-            canvas_set_color(canvas, ColorWhite);
-        } else {
-            canvas_set_color(canvas, ColorBlack);
-        }
+    // 1. LEFT SIDE: Service Checklist (or empty hint when service_count == 0)
+    if(app->service_count == 0) {
         canvas_set_font(canvas, FontSecondary);
-        if(index < app->service_count) {
+        canvas_draw_str(canvas, 2, 24, "No services");
+        canvas_draw_str(canvas, 2, 35, "Hold >: Add");
+    } else {
+        uint8_t first = app->checklist_selection >= 2 ? app->checklist_selection - 1U : 0U;
+        for(uint8_t row = 0U; (row < 4U) && ((first + row) < app->service_count); row++) {
+            uint8_t index = first + row;
+            uint8_t y = 22 + row * 10;
+            bool selected = (!app->checklist_right_open) && (index == app->checklist_selection);
+
+            if(selected) {
+                canvas_set_color(canvas, ColorBlack);
+                canvas_draw_box(canvas, 0, y - 8, 58, 10);
+                canvas_set_color(canvas, ColorWhite);
+            } else {
+                canvas_set_color(canvas, ColorBlack);
+            }
+
+            canvas_set_font(canvas, FontSecondary);
             char line[LOG_LINE_SIZE];
             snprintf(
                 line,
@@ -1255,14 +1259,84 @@ static void draw_checklist(Canvas* canvas, void* context) {
                 "%s %s",
                 app->service_checked[index] ? "[x]" : "[ ]",
                 app->services[index]);
-            canvas_draw_str(canvas, 3, y, line);
-
-        } else {
-            canvas_draw_str(canvas, 3, y, "NFC Tag(s)");
+            canvas_draw_str(canvas, 2, y, line);
+            canvas_set_color(canvas, ColorBlack);
         }
-        canvas_set_color(canvas, ColorBlack);
     }
-    
+
+    // 2. RIGHT SIDE: Last Service Date OR Scrollable Hold-Right Menu (x = 60..127)
+    const Asset* asset =
+        (app->selected_asset >= 0 && (uint8_t)app->selected_asset < app->asset_count) ?
+            &app->assets[(uint8_t)app->selected_asset] :
+            NULL;
+
+    canvas_set_color(canvas, ColorWhite);
+    canvas_draw_box(canvas, 60, 1, 68, 53);
+    canvas_set_color(canvas, ColorBlack);
+    canvas_draw_rframe(canvas, 60, 1, 68, 53, 2);
+    canvas_set_font(canvas, FontSecondary);
+
+    if(!app->checklist_right_open) {
+        // Default Right Box: Last Service Date + Clock Status
+        canvas_draw_str(canvas, 63, 11, "Last Service:");
+        canvas_draw_str(canvas, 63, 20, asset ? asset->last_service : "Never");
+
+        if(asset && asset->clock_in_ts > 0 && asset->clock_out_ts == 0) {
+            canvas_draw_str(canvas, 63, 32, "Status: IN");
+        } else if(asset && asset->clock_out_ts > asset->clock_in_ts) {
+            uint32_t h = 0, m = 0;
+            calc_asset_clock_duration(asset, &h, &m);
+            char dur;
+            snprintf(dur, sizeof(dur), "%luh %02lum", (unsigned long)h, (unsigned long)m);
+            canvas_draw_str(canvas, 63, 32, dur);
+        }
+        canvas_draw_str(canvas, 63, 49, "Hold >: Menu");
+    } else {
+        // Active Right Menu (Opened when Hold Right sets checklist_right_open = true)
+        const char* clock_label =
+            (asset && asset->clock_in_ts > 0 && asset->clock_out_ts == 0) ? "Clock Out" : "Clock In";
+
+        const char* checked_options[] = {
+            "Save & Log",
+            "Write NFC",
+            clock_label,
+        };
+        const char* unchecked_options[] = {
+            clock_label,
+            "Add Service",
+            "View History",
+        };
+
+        const char* const* options =
+            app->checklist_right_has_checks ? checked_options : unchecked_options;
+
+        canvas_draw_str(
+            canvas,
+            63,
+            10,
+            app->checklist_right_has_checks ? "Actions:" : "Options:");
+        canvas_draw_line(canvas, 61, 12, 126, 12);
+
+        for(uint8_t i = 0; i < 3; i++) {
+            uint8_t item_y = 22 + i * 11;
+            if(i == app->right_menu_selection) {
+                canvas_set_color(canvas, ColorBlack);
+                canvas_draw_box(canvas, 62, item_y - 8, 64, 10);
+                canvas_set_color(canvas, ColorWhite);
+            } else {
+                canvas_set_color(canvas, ColorBlack);
+            }
+            canvas_draw_str(canvas, 64, item_y, options[i]);
+            canvas_set_color(canvas, ColorBlack);
+        }
+    }
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(
+        canvas,
+        2,
+        62,
+        app->checklist_right_open ? "OK: select  <: close" : "OK: check  Hold >: menu");
 }
 
 
@@ -1449,7 +1523,7 @@ static bool checklist_input(InputEvent* event, void* context) {
             }
             return true;
         }
-        return false;
+        return true;
     }
 
     // 3. Normal Left-Side Checklist Controls
@@ -1507,7 +1581,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
 }
 
 // Rebuilds the selected asset menu with its clock-tracking action.
-/*static void rebuild_profile_menu(MaintenanceApp* app) {   
+static void rebuild_profile_menu(MaintenanceApp* app) {   
     submenu_reset(app->profile_menu);
     Asset* asset = &app->assets[(uint8_t)app->selected_asset];
     char header[64];
@@ -1517,7 +1591,7 @@ static void show_notice(MaintenanceApp* app, const char* message, bool exits) {
     submenu_add_item(app->profile_menu, "Maintenance Records", 1, profile_menu_callback, app);     // Changed name from "view history/Log \\//"
     submenu_add_item(app->profile_menu, "Add Service", 2, profile_menu_callback, app);
     submenu_add_item(app->profile_menu, "NFC Tag(s)", 3, profile_menu_callback, app);
-}*/
+}
 
 // Routes main-menu selections to equipment browsing or new-asset input.
 static void main_menu_callback(void* context, uint32_t index) {  
@@ -1590,7 +1664,7 @@ static void text_input_callback(void* context) {
         } else if(append_custom_service(app, app->input_buffer)) {
             load_services(app);
             view_commit_model(app->checklist_view, true);
-            //rebuild_profile_menu(app);
+            rebuild_profile_menu(app);
             switch_view(app, ViewChecklist);
         } else {
             show_notice(app, "Could not save service", false);
@@ -1695,14 +1769,14 @@ static void text_input_callback(void* context) {
 static bool navigation_callback(void* context) {      
     MaintenanceApp* app = context;
     uint32_t current = app->current_view;
-    if(current == ViewMain) {
+   // if(current == ViewMain) {
         /*if(app->tracker_state == TrackerStateRunning) {
             show_notice(app, "Clock Out before exiting", false);
             return true;
         }
         return false;
         */
-    }
+   // }
     if(current == ViewEquipment) {
         switch_view(app, ViewMain);
     } else if(current == ViewProfile) {
@@ -1753,7 +1827,7 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     app->main_menu = submenu_alloc();
     submenu_set_header(app->main_menu, "Maintenance Tracker");
     submenu_add_item(app->main_menu, "Show Equipment", 0, main_menu_callback, app);
-    submenu_add_item(app->main_menu, "Scan Equipment", 1, main_menu_callback, app);
+    submenu_add_item(app->main_menu, "Add Equipment", 1, main_menu_callback, app);
     submenu_add_item(app->main_menu, "NFC Toolbox", 2, main_menu_callback, app);
     view_dispatcher_add_view(
         app->dispatcher, ViewMain, submenu_get_view(app->main_menu));
