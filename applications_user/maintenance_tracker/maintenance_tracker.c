@@ -1287,19 +1287,19 @@ static void draw_notice(Canvas* canvas, void* context) {
 }
 
 // Handles equipment-list navigation and opens the selected asset profile.
-static bool equipment_input(InputEvent* event, void* context) {  //------------------------------------------------------//
+static bool equipment_input(InputEvent* event, void* context) {  //------------------------------------------------------
     MaintenanceApp* app = context;
-/*    if(event->type == InputTypeLong && event->key == InputKeyRight) {
+  //  if(event->type == InputTypeLong && event->key == InputKeyRight) {
     // Open your text box here!
-    return true;
-}
-*/
+   //L return true;
+
     if(event->type != InputTypeShort) return false;
     
-    if(event->key == InputKeyUp) {
-        if(app->selected_asset > 0) 
-        app->selected_asset--;
-        load_quick_log(app);
+        if(event->key == InputKeyUp) {
+            if(app->selected_asset > 0) {
+                app->selected_asset--;
+                load_quick_log(app);
+        }
         view_commit_model(app->equipment_view, true);
         return true;
     }
@@ -1307,10 +1307,12 @@ static bool equipment_input(InputEvent* event, void* context) {  //-------------
         if((app->asset_count > 0) && ((uint8_t)(app->selected_asset + 1) < app->asset_count)) {
             app->selected_asset++;
             load_quick_log(app);
+        }
         view_commit_model(app->equipment_view, true); //refreshes screen each scroll
         return true;
     }
-if(event->key == InputKeyOk) {
+    
+    if(event->key == InputKeyOk) {
         if(app->asset_count == 0 || app->selected_asset < 0) return true;
         memset(app->service_checked, 0, sizeof(app->service_checked));
         memset(app->services, 0, sizeof(app->services));
