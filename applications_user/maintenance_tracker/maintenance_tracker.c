@@ -1286,7 +1286,7 @@ static void draw_checklist(Canvas* canvas, void* context) {
         } else if(asset && asset->clock_out_ts > asset->clock_in_ts) {
             uint32_t h = 0, m = 0;
             calc_asset_clock_duration(asset, &h, &m);
-            char dur;
+            char[24] dur;
             snprintf(dur, sizeof(dur), "%luh %02lum", (unsigned long)h, (unsigned long)m);
             canvas_draw_str(canvas, 63, 32, dur);
         }
@@ -1881,9 +1881,14 @@ static MaintenanceApp* maintenance_tracker_alloc(void) {
     view_set_context(app->notice_view, app);
     view_set_draw_callback(app->notice_view, draw_notice);
     view_set_input_callback(app->notice_view, notice_input);
-    view_allocate_model(app->notice_view, ViewModelTypeLockFree, 1);
+     view_allocate_model(app->notice_view, ViewModelTypeLockFree, sizeof(MaintenanceApp*));
+    with_view_model(
+        app->notice_view,
+        MaintenanceApp** model,
+        { *model = app; },
+        false);
     view_dispatcher_add_view(app->dispatcher, ViewNotice, app->notice_view);
-
+    
     app->tracker_view = view_alloc();
     view_set_context(app->tracker_view, app);
     view_set_draw_callback(app->tracker_view, draw_tracker);
